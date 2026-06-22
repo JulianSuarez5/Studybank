@@ -279,6 +279,63 @@ function extractSummaries(text: string): string[] {
   return summaries;
 }
 
+function extractQuestionsBlockFallback(text: string): ExtractedQuestion[] {
+  const questions: ExtractedQuestion[] = [];
+
+  const blocks = text.split(/\n\s*\n/);
+
+  for (const block of blocks) {
+    const lines = block.split('\n').map(l => l.trim()).filter(l => l);
+    if (lines.length < 3) continue;
+
+    const hasNumber = /^\d+[.)]\s/.test(lines[0]);
+    const hasOptions = lines.some(l => /^[a-dA-D][.)]\s/.test(l));
+    if (!hasNumber || !hasOptions) continue;
+
+    const numMatch = lines[0].match(/^(\d+)[.)]\s(.+)/);
+    if (!numMatch) continue;
+
+    const statement = numMatch[2];
+    const opts: string[] = [];
+    let correctAnswer = '';
+    let explanation = '';
+
+    for (const line of lines) {
+      const optMatch = line.match(/^[a-dA-D][.)]\s*(.+)/);
+      if (optMatch) {
+        opts.push(optMatch[1]);
+      }
+      const ansMatch = line.match(/(?:respuesta|rta|clave|correcta|opci[oó]n\s+correcta)[.:]?\s*([A-Da-d])/i);
+      if (ansMatch) {
+        correctAnswer = ansMatch[1].toUpperCase();
+      }
+      const explMatch = line.match(/(?:explicación|explicacion|explicação|justificación|justificacion|razón|razon)\s*[.:]/i);
+      if (explMatch) {
+        explanation += line + '\n';
+      }
+    }
+
+    if (statement.length > 5 && opts.length >= 2) {
+      let correctText = '';
+      if (correctAnswer) {
+        const idx = correctAnswer.charCodeAt(0) - 65;
+        if (idx >= 0 && idx < opts.length) correctText = opts[idx];
+      }
+      questions.push({
+        statement,
+        options: opts,
+        correctAnswer: correctText,
+        explanation: explanation.trim(),
+        topic: '',
+        subtopic: '',
+        specialty: '',
+      });
+    }
+  }
+
+  return questions;
+}
+
 export async function parseDocument(
   buffer: Buffer,
   mimeType: string,
@@ -301,6 +358,7 @@ export async function parseDocument(
     }
 
     console.log(`[Parser] PDF extracted ${text.length} chars from: ${filename}`);
+    console.log(`[Parser] First 300 chars:`, text.substring(0, 300).replace(/\n/g, '\\n'));
   } else if (
     mimeType.includes('word') ||
     mimeType.includes('officedocument') ||
@@ -313,7 +371,13 @@ export async function parseDocument(
     text = buffer.toString('utf-8');
   }
 
-  const questions = extractQuestionsFromText(text);
+  let questions = extractQuestionsFromText(text);
+
+  if (questions.length === 0) {
+    console.log(`[Parser] Regex found 0 questions, trying block fallback for: ${filename}`);
+    questions = extractQuestionsBlockFallback(text);
+    console.log(`[Parser] Block fallback found ${questions.length} questions`);
+  }
 
   const classified = questions.map(q => {
     const cls = classifyContent(q.statement + ' ' + (q.options.join(' ')));
