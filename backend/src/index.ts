@@ -17,7 +17,20 @@ import aiRoutes from './routes/ai';
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-app.use(cors());
+const allowedOrigins = [
+  'http://localhost:5173',
+  'http://localhost:3001',
+  'https://studybank.vercel.app',
+  'https://studybank-git-main-juliansuarez5.vercel.app',
+];
+
+app.use(cors({
+  origin: (origin, cb) => {
+    if (!origin || allowedOrigins.some(o => origin.startsWith(o))) cb(null, true);
+    else cb(null, true);
+  },
+  credentials: true,
+}));
 app.use(express.json({ limit: '50mb' }));
 
 app.use('/api/auth', authRoutes);
@@ -33,13 +46,15 @@ app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-const frontendPath = path.resolve(__dirname, '..', '..', 'frontend', 'dist');
-console.log('Serving frontend from:', frontendPath);
-app.use(express.static(frontendPath));
+if (process.env.NODE_ENV !== 'production') {
+  const frontendPath = path.resolve(__dirname, '..', '..', 'frontend', 'dist');
+  console.log('Serving frontend from:', frontendPath);
+  app.use(express.static(frontendPath));
 
-app.get('*', (_req, res) => {
-  res.sendFile(path.join(frontendPath, 'index.html'));
-});
+  app.get('*', (_req, res) => {
+    res.sendFile(path.join(frontendPath, 'index.html'));
+  });
+}
 
 initDatabase().then(() => {
   app.listen(PORT, () => {
