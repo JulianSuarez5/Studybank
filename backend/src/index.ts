@@ -3,7 +3,6 @@ dotenv.config();
 
 import express from 'express';
 import cors from 'cors';
-import path from 'path';
 import { initDatabase } from './database';
 import authRoutes from './routes/auth';
 import documentRoutes from './routes/documents';
@@ -45,16 +44,6 @@ app.use('/api/ai', aiRoutes);
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
-
-if (process.env.NODE_ENV !== 'production') {
-  const frontendPath = path.resolve(__dirname, '..', '..', 'frontend', 'dist');
-  console.log('Serving frontend from:', frontendPath);
-  app.use(express.static(frontendPath));
-
-  app.get('*', (_req, res) => {
-    res.sendFile(path.join(frontendPath, 'index.html'));
-  });
-}
 
 initDatabase().then(() => {
   app.listen(PORT, () => {
