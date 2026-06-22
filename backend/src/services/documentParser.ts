@@ -19,19 +19,66 @@ interface ExtractedContent {
   rawText: string;
 }
 
+function extractAnswerKey(text: string): Map<number, string> {
+  const answerKey = new Map<number, string>();
+  const lines = text.split('\n');
+
+  let inAnswerSection = false;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+
+    if (/^(respuestas?|clave|answer\s*key|soluci[oó]n|solucionario|hoja\s+de\s+respuestas)/i.test(trimmed)) {
+      inAnswerSection = true;
+      continue;
+    }
+
+    if (/^\d+\s*[.)\]]?\s*[-–]\s*[A-Da-d]\s*$/.test(trimmed)) {
+      const parts = trimmed.split(/[-–]/);
+      const num = parseInt(parts[0].replace(/[^0-9]/g, ''));
+      const letter = parts[1]?.trim()?.[0]?.toUpperCase();
+      if (num > 0 && letter && /[A-D]/.test(letter)) {
+        answerKey.set(num, letter);
+        inAnswerSection = true;
+        continue;
+      }
+    }
+
+    if (/^(\d+)\s*[.)\]]?\s*([A-Da-d])\s*$/.test(trimmed)) {
+      const m = trimmed.match(/^(\d+)\s*[.)\]]?\s*([A-Da-d])\s*$/);
+      if (m) {
+        const num = parseInt(m[1]);
+        const letter = m[2].toUpperCase();
+        if (inAnswerSection || trimmed.length < 8) {
+          answerKey.set(num, letter);
+          continue;
+        }
+      }
+    }
+
+    if (inAnswerSection && trimmed.length > 20) {
+      inAnswerSection = false;
+    }
+  }
+
+  return answerKey;
+}
+
 function extractQuestionsFromText(text: string): ExtractedQuestion[] {
-  const questions: ExtractedQuestion[] = [];
+  const allQuestions: { q: Partial<ExtractedQuestion>; num: number }[] = [];
   const lines = text.split('\n').map(l => l.trim()).filter(l => l);
 
   let currentQuestion: Partial<ExtractedQuestion> | null = null;
   let currentOptions: string[] = [];
+  let currentNum = 0;
   let collectingExplanation = false;
   let explanationText = '';
 
   const optionRegex = /^([a-dA-D][.)])\s*(.+)/;
-  const correctMarkerRegex = /^\s*(\*{1,2}|R:|Respuesta:|Correcta:|✓|✗|X)\s*[.:]?\s*([a-dA-D])/i;
+  const correctMarkerRegex = /^\s*(\*{1,2}|[Rr][.:]|[Rr]espuesta[.:]|[Cc]orrecta[.:]|[Cc]lave[.:]|[✓✗X])\s*[.:]?\s*([a-dA-D])/i;
   const questionNumberRegex = /^(\d+[.)])\s*(.+)/;
-  const answerLineRegex = /^(respuesta|rta)\s*[.:]\s*(.+)/i;
+  const answerLineRegex = /^(respuesta|rta|clave)\s*[.:]\s*(.+)/i;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -67,10 +114,11 @@ function extractQuestionsFromText(text: string): ExtractedQuestion[] {
 
     const qMatch = line.match(questionNumberRegex);
     if (qMatch) {
-      if (currentQuestion && currentQuestion.statement && currentQuestion.correctAnswer) {
+      if (currentQuestion && currentQuestion.statement) {
         currentQuestion.explanation = explanationText;
-        questions.push(currentQuestion as ExtractedQuestion);
+        allQuestions.push({ q: currentQuestion, num: currentNum });
       }
+      currentNum = parseInt(qMatch[1]);
       currentOptions = [];
       explanationText = '';
       currentQuestion = {
@@ -99,9 +147,27 @@ function extractQuestionsFromText(text: string): ExtractedQuestion[] {
     }
   }
 
-  if (currentQuestion && currentQuestion.statement && currentQuestion.correctAnswer) {
+  if (currentQuestion && currentQuestion.statement) {
     currentQuestion.explanation = explanationText;
-    questions.push(currentQuestion as ExtractedQuestion);
+    allQuestions.push({ q: currentQuestion, num: currentNum });
+  }
+
+  const answerKey = extractAnswerKey(text);
+
+  const questions: ExtractedQuestion[] = [];
+  for (const { q, num } of allQuestions) {
+    const opts = q.options || [];
+    if (!q.correctAnswer && answerKey.has(num) && opts.length > 0) {
+      const letter = answerKey.get(num)!;
+      const idx = letter.charCodeAt(0) - 65;
+      if (idx >= 0 && idx < opts.length) {
+        q.correctAnswer = opts[idx];
+      }
+    }
+    if (q.statement && opts.length >= 2) {
+      q.options = opts;
+      questions.push(q as ExtractedQuestion);
+    }
   }
 
   return questions;
@@ -223,7 +289,18 @@ export async function parseDocument(
   if (mimeType.includes('pdf') || filename.endsWith('.pdf')) {
     const pdfParse = require('pdf-parse');
     const data = await pdfParse(buffer);
-    text = data.text;
+    text = data.text || '';
+
+    if (!text || text.trim().length < 100) {
+      console.warn(`[Parser] PDF text too short (${text.length} chars). Trying raw extraction for: ${filename}`);
+      const raw = buffer.toString('utf-8');
+      const cleaned = raw.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, ' ').replace(/\s+/g, ' ').trim();
+      if (cleaned.length > text.length) {
+        text = cleaned;
+      }
+    }
+
+    console.log(`[Parser] PDF extracted ${text.length} chars from: ${filename}`);
   } else if (
     mimeType.includes('word') ||
     mimeType.includes('officedocument') ||

@@ -80,7 +80,7 @@ router.post('/upload', authMiddleware, upload.single('file'), async (req: AuthRe
     }
     response.summariesExtracted = (response.summariesExtracted || 0) + parsed.summaries.length;
 
-    if (docType === 'theory' || docType === 'mixed') {
+    if (docType === 'theory' || docType === 'mixed' || (docType === 'questions' && parsed.questions.length === 0)) {
       const theoryResult = await processTheoryDocument(user_id, documentId, rawText, original_name);
 
       response.aiConceptsExtracted = theoryResult.conceptsExtracted;
