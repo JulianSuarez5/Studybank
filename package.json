@@ -1,0 +1,12 @@
+{
+  "name": "studybank",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "install:all": "cd backend && npm install && cd ../frontend && npm install",
+    "dev:backend": "cd backend && npx tsx src/index.ts",
+    "dev:frontend": "cd frontend && npx vite",
+    "build:frontend": "cd frontend && npx vite build",
+    "start": "cd backend && npx tsx src/index.ts"
+  }
+}

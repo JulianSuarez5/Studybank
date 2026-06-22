@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.env
+*.log
+.DS_Store
+token.txt
+*.mjs
+*.db
+test.txt
+vet_result.txt
+tsconfig.tsbuildinfo
+frontend/dist/
+backend/server.log
+frontend/.env
