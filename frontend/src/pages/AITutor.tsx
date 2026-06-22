@@ -53,7 +53,8 @@ export default function AITutor() {
     abortRef.current = new AbortController();
 
     try {
-      const response = await fetch('/api/ai/chat/stream', {
+      const baseUrl = import.meta.env.VITE_API_URL || '';
+      const response = await fetch(`${baseUrl}/api/ai/chat/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` },
         body: JSON.stringify({ query }),
