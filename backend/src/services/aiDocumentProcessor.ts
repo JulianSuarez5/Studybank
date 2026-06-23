@@ -2,6 +2,18 @@ import { getDb } from '../database';
 import { classifyContent } from './classifier';
 import { generateText } from './aiProvider';
 
+const FRAGMENT_ENDINGS = /(el|la|los|las|de|del|por|para|con|sin|que|es|se|su|un|una|lo|al|del|en|y|o|a|e|i|no|más|pero|como|cuando|donde|este|esta|esto|eso|esa|ese|muy|tan|tal|tras|entre|según|durante|sobre|ante|yo|tu|él|nos|os|les|mis|tus|sus|son|era|fue|será|sea|sido|han|has|había|habrá|hay|haya|hubo)$/i;
+
+function isValidConcept(text: string): boolean {
+  if (!text || text.length < 20 || text.length > 400) return false;
+  if (/^[a-z]/.test(text)) return false;
+  if (FRAGMENT_ENDINGS.test(text.trim())) return false;
+  if (/^[A-Da-d][.)]\s+/.test(text)) return false;
+  if (/^[A-D]\b/.test(text) && !text.includes(':')) return false;
+  if ((text.match(/\s+/g) || []).length < 3) return false;
+  return true;
+}
+
 function parseJsonResponse(raw: string): any | null {
   try {
     const cleaned = raw.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
@@ -192,18 +204,19 @@ async function processFragment(
     if ((trimmed.startsWith('- ') || trimmed.startsWith('• ') || trimmed.startsWith('* ')) &&
         trimmed.length > 5 && trimmed.length < 400) {
       const item = trimmed.replace(/^[-•*]\s*/, '');
-      if (!bulletItems.some(b => areSimilar(b, item, 0.2))) {
+      if (isValidConcept(item) && !bulletItems.some(b => areSimilar(b, item, 0.2))) {
         bulletItems.push(item);
       }
     }
 
+    if (FRAGMENT_ENDINGS.test(trimmed)) continue;
     for (const pattern of definitionPatterns) {
       const m = trimmed.match(pattern);
       if (m) {
         const term = m[1].trim();
         const def = m[2].trim();
-        if (term.length > 2 && term.length < 100 && def.length > 5 && def.length < 300) {
-          if (!definitionPairs.some(d => areSimilar(d.term, term, 0.2))) {
+        if (term.length > 3 && term.length < 100 && def.length > 10 && def.length < 300) {
+          if (!FRAGMENT_ENDINGS.test(term) && !definitionPairs.some(d => areSimilar(d.term, term, 0.2))) {
             definitionPairs.push({ term, def });
           }
         }
@@ -286,14 +299,15 @@ async function processFragment(
     flashcardCount++;
   }
 
-  const headerMatch = fragment.match(/^((?:Capítulo|Tema|Lección|Unidad|Chapter|Unit|Lesson)\s+\d+[.:]\s*.+)$/im);
-  if (headerMatch && conceptCount === 0) {
-    const header = headerMatch[1].trim().substring(0, 200);
-
-    await db.prepare(
-      'INSERT INTO key_concepts (user_id, concept, definition, topic) VALUES ($1, $2, $3, $4)'
-    ).run(userId, header, `Sección del documento: ${filename}`, cls.topic || 'Material de Estudio');
-    conceptCount++;
+  if (conceptCount === 0) {
+    const headerMatch = fragment.match(/^((?:Capítulo|Tema|Lección|Unidad|Chapter|Unit|Lesson|Tópico)\s+\d+[.:]\s*.+)$/im);
+    if (headerMatch) {
+      const header = headerMatch[1].trim().substring(0, 200);
+      await db.prepare(
+        'INSERT INTO key_concepts (user_id, concept, definition, topic) VALUES ($1, $2, $3, $4)'
+      ).run(userId, header, `Sección del documento: ${filename}`, cls.topic || 'Material de Estudio');
+      conceptCount++;
+    }
   }
 
   return { concepts: conceptCount, flashcards: flashcardCount };

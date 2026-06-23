@@ -49,7 +49,7 @@ export async function generateText(
 
   try {
     if (provider === 'gemini') {
-      const model = process.env.GEMINI_MODEL || 'gemini-3.5-flash';
+      const model = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
       const url = `${GEMINI_BASE}/${model}:generateContent?key=${apiKey}`;
       const body = buildGeminiBody(systemPrompt, messages, false);
       const res = await fetch(url, {
@@ -121,7 +121,7 @@ export async function streamText(
 
   try {
     if (provider === 'gemini') {
-      const model = process.env.GEMINI_MODEL || 'gemini-3.5-flash';
+      const model = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
       const url = `${GEMINI_BASE}/${model}:streamGenerateContent?alt=sse&key=${apiKey}`;
       const body = buildGeminiBody(systemPrompt, messages, true);
       const res = await fetch(url, {

@@ -173,18 +173,32 @@ function extractQuestionsFromText(text: string): ExtractedQuestion[] {
   return questions;
 }
 
+const FRAGMENT_ENDINGS = /(el|la|los|las|de|del|por|para|con|sin|que|es|se|su|un|una|lo|al|del|en|y|o|a|e|i|no|más|pero|como|cuando|donde|este|esta|esto|eso|esa|ese|muy|tan|tal|tras|entre|según|mediante|durante|sin|sobre|ante|cabe|yo|tu|él|nos|os|les|mis|tus|sus|son|era|fue|será|sea|sido|han|has|había|habrá|hay|haya|hubo)$/i;
+const PDF_ARTIFACT = /^(\.{3,}|…|•|(\d+\s*$)|(figura|tabla|gráfico|imagen|fuente|elaboración)\s+\d+|página\s+\d+|www\.|http)/i;
+
+function isValidConcept(text: string): boolean {
+  if (!text || text.length < 20 || text.length > 400) return false;
+  if (PDF_ARTIFACT.test(text)) return false;
+  if (/^[a-z]/.test(text)) return false;
+  if (FRAGMENT_ENDINGS.test(text.trim())) return false;
+  if (/^[A-Da-d][.)]\s+/.test(text)) return false;
+  if ((text.match(/\s+/g) || []).length < 3) return false;
+  const words = text.split(/\s+/);
+  const uniqueWords = new Set(words.map(w => w.toLowerCase()));
+  if (uniqueWords.size / words.length < 0.4) return false;
+  if (/^[A-D]\b/.test(text) && !text.includes(':')) return false;
+  return true;
+}
+
 function extractConcepts(text: string): string[] {
   const concepts: string[] = [];
   const lines = text.split('\n');
 
   for (const line of lines) {
     const trimmed = line.trim();
-    if (
-      (trimmed.startsWith('- ') || trimmed.startsWith('• ') || trimmed.startsWith('* ')) &&
-      trimmed.length > 3 && trimmed.length < 300
-    ) {
-      concepts.push(trimmed.replace(/^[-•*]\s*/, ''));
-    }
+    if (!(trimmed.startsWith('- ') || trimmed.startsWith('• ') || trimmed.startsWith('* '))) continue;
+    const content = trimmed.replace(/^[-•*]\s*/, '');
+    if (isValidConcept(content)) concepts.push(content);
   }
 
   return concepts;
@@ -194,13 +208,13 @@ function extractDefinitionConcepts(text: string): { concept: string; definition:
   const results: { concept: string; definition: string }[] = [];
   const definitionPatterns = [
     /(.+?)\s+se define como\s+(.+)/i,
-    /(.+?)\s+es\s+(.+?)(?:\.|$)/i,
+    /(.+?)\s+es\s+(.+?)(?:\.\s|\.$|$)/i,
     /(.+?)\s+consiste en\s+(.+)/i,
     /(.+?)\s+se refiere a\s+(.+)/i,
     /(.+?)\s+significa\s+(.+)/i,
     /definición\s+de\s+(.+?)[:.:]\s*(.+)/i,
     /concepto\s+de\s+(.+?)[:.:]\s*(.+)/i,
-    /([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+[a-záéíóúñ]+){0,4}):\s+(.+?)(?:\.|$)/,
+    /^([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+[a-záéíóúñ]+){1,6}):\s+(.+?)(?:\.\s|\.$|$)/m,
   ];
 
   for (const pattern of definitionPatterns) {
@@ -208,10 +222,10 @@ function extractDefinitionConcepts(text: string): { concept: string; definition:
     for (const m of matches) {
       const concept = m[1].trim();
       const definition = m[2].trim();
-      if (concept.length > 2 && concept.length < 100 && definition.length > 10) {
-        if (!results.some(r => r.concept.toLowerCase() === concept.toLowerCase())) {
-          results.push({ concept, definition });
-        }
+      if (concept.length > 3 && concept.length < 120 && definition.length > 15 && definition.length < 500) {
+        if (FRAGMENT_ENDINGS.test(concept)) continue;
+        if (results.some(r => r.concept.toLowerCase() === concept.toLowerCase())) continue;
+        results.push({ concept, definition });
       }
     }
   }
