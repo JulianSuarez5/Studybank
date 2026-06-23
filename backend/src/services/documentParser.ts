@@ -350,12 +350,55 @@ function extractQuestionsBlockFallback(text: string): ExtractedQuestion[] {
   return questions;
 }
 
+async function ocrPdfWithGemini(buffer: Buffer): Promise<string> {
+  const key = process.env.GEMINI_API_KEY;
+  if (!key) return '';
+
+  const model = process.env.GEMINI_MODEL || 'gemini-3.1-flash-lite';
+  const base64 = buffer.toString('base64');
+
+  try {
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{
+            parts: [
+              { inlineData: { mimeType: 'application/pdf', data: base64 } },
+              { text: 'Transcribe EXACTAMENTE todo el texto visible en este PDF, incluyendo preguntas, opciones, respuestas, explicaciones, encabezados, tablas y cualquier contenido escrito. No resumas, no interpretes, no añadas nada. Texto exacto solamente.' }
+            ]
+          }]
+        }),
+        signal: AbortSignal.timeout(90000),
+      }
+    );
+
+    if (!response.ok) {
+      const errText = await response.text();
+      console.error(`[Parser] Gemini OCR error (${response.status}):`, errText.substring(0, 300));
+      return '';
+    }
+
+    const data = await response.json() as any;
+    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    console.log(`[Parser] Gemini OCR extracted ${text.length} chars`);
+    return text;
+  } catch (err: any) {
+    console.error('[Parser] Gemini OCR error:', err.message);
+    return '';
+  }
+}
+
 export async function parseDocument(
   buffer: Buffer,
   mimeType: string,
   filename: string
 ): Promise<ExtractedContent> {
   let text = '';
+
+  let usedOcr = false;
 
   if (mimeType.includes('pdf') || filename.endsWith('.pdf')) {
     const pdfParse = require('pdf-parse');
@@ -371,7 +414,16 @@ export async function parseDocument(
       }
     }
 
-    console.log(`[Parser] PDF extracted ${text.length} chars from: ${filename}`);
+    if (text.trim().length < 500 && buffer.length > 100000) {
+      console.log(`[Parser] Text too short for PDF size (${buffer.length} bytes). Trying Gemini OCR...`);
+      const ocrText = await ocrPdfWithGemini(buffer);
+      if (ocrText && ocrText.length > text.length) {
+        text = ocrText;
+        usedOcr = true;
+      }
+    }
+
+    console.log(`[Parser] PDF extracted ${text.length} chars from: ${filename}${usedOcr ? ' (via OCR)' : ''}`);
     console.log(`[Parser] First 300 chars:`, text.substring(0, 300).replace(/\n/g, '\\n'));
   } else if (
     mimeType.includes('word') ||
