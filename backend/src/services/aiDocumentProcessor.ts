@@ -1,38 +1,6 @@
 import { getDb } from '../database';
 import { classifyContent } from './classifier';
-
-const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
-
-async function callGroqOnce(systemPrompt: string, userContent: string): Promise<string> {
-  const apiKey = process.env.GROQ_API_KEY || '';
-  if (!apiKey) return '';
-
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000);
-
-    const response = await fetch(GROQ_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-      body: JSON.stringify({
-        model: 'llama-3.3-70b-versatile',
-        messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userContent }],
-        temperature: 0.3,
-        max_tokens: 1024,
-      }),
-      signal: controller.signal,
-    });
-
-    clearTimeout(timeoutId);
-
-    if (response.status === 429) return '';
-    if (!response.ok) return '';
-    const data = await response.json() as any;
-    return data?.choices?.[0]?.message?.content || '';
-  } catch {
-    return '';
-  }
-}
+import { generateText } from './aiProvider';
 
 function parseJsonResponse(raw: string): any | null {
   try {
@@ -161,14 +129,20 @@ async function tryAiFlashcardGeneration(
   topic: string,
   specialty: string
 ): Promise<{ front: string; back: string } | null> {
-  const prompt = `Convierte este concepto en una flashcard (pregunta→respuesta). Una sola idea. Pregunta ≤20 palabras, respuesta ≤15 palabras.
+  const conceptPart = definition ? `${concept}: ${definition}` : concept;
+  const prompt = `Genera una flashcard educativa sobre este contenido:
 
-Concepto: ${concept}
-Definición: ${definition.substring(0, 200)}
+${conceptPart.substring(0, 300)}
 
-Responde SOLO JSON: {"front":"¿pregunta?","back":"respuesta"}`;
+REGLAS:
+- Pregunta original y variada (NO empieces con "¿Qué es")
+- Respuesta clara y completa (máximo 25 palabras)
+- Una sola idea por flashcard
+- Debe reflejar EL CONTENIDO del documento, no una definición genérica
 
-  const result = await callGroqOnce('Eres un asistente que crea flashcards educativas. Responde solo JSON.', prompt);
+Responde SOLO JSON: {"front":"pregunta","back":"respuesta"}`;
+
+  const result = await generateText('Eres un experto en crear flashcards educativas de alta calidad. Responde solo JSON.', [{ role: 'user', content: prompt }]);
   if (!result) return null;
 
   const parsed = parseJsonResponse(result);
@@ -177,7 +151,7 @@ Responde SOLO JSON: {"front":"¿pregunta?","back":"respuesta"}`;
   const front = String(parsed.front).trim();
   const back = String(parsed.back).trim();
   if (front.length < 5 || back.length < 2) return null;
-  if (front.length > 150 || back.length > 100) return null;
+  if (front.length > 200 || back.length > 200) return null;
 
   return { front, back };
 }
@@ -250,7 +224,15 @@ async function processFragment(
     ).run(userId, concept.substring(0, 200), definition.substring(0, 500), clsItem.topic || cls.topic || 'Material de Estudio');
     conceptCount++;
 
-    let flashcardFront = `¿Qué es ${concept}?`;
+    const questionVariations = [
+      `¿Qué es ${concept}?`,
+      `Define: ${concept}`,
+      `Explica brevemente ${concept}`,
+      `¿En qué consiste ${concept}?`,
+      `${concept}:`,
+    ];
+    const randomIdx = Math.floor(Math.random() * questionVariations.length);
+    let flashcardFront = questionVariations[randomIdx];
     let flashcardBack = definition.substring(0, 200);
 
     if (definition && aiAttempts < 3) {
@@ -386,29 +368,39 @@ export async function processTheoryDocument(
       const c = allConcepts[i];
       if (!c.definition || c.definition.length < 10) continue;
 
-      const def = c.definition.substring(0, 150);
+      const correctDef = c.definition.substring(0, 150);
       const distractors = allConcepts
         .filter(x => x.concept !== c.concept && x.definition.length > 5)
-        .slice(i % (allConcepts.length - 3) + 1, i % (allConcepts.length - 3) + 4)
+        .slice(i % Math.max(1, allConcepts.length - 3) + 1, i % Math.max(1, allConcepts.length - 3) + 4)
         .map(x => x.definition.substring(0, 150));
 
       if (distractors.length < 2) continue;
 
-      const options = [def, ...distractors];
+      const options = [correctDef, ...distractors];
       for (let j = options.length - 1; j > 0; j--) {
         const k = Math.floor(Math.random() * (j + 1));
         [options[j], options[k]] = [options[k], options[j]];
       }
+
+      const questionVariations = [
+        `¿Cuál es la definición correcta de ${c.concept}?`,
+        `Sobre ${c.concept}, señale la opción correcta:`,
+        `${c.concept}: elija la afirmación verdadera`,
+        `Respecto a ${c.concept}, ¿qué afirma correctamente?`,
+        `Complete: ${c.concept} se refiere a:`,
+        `Identifique la opción correcta sobre ${c.concept}:`,
+      ];
+      const qIdx = Math.floor(Math.random() * questionVariations.length);
 
       await db.prepare(`
         INSERT INTO questions (document_id, user_id, statement, options, correct_answer, explanation, topic, subtopic, specialty, origin)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
       `).run(
         documentId, userId,
-        `¿Qué es ${c.concept}?`,
+        questionVariations[qIdx],
         JSON.stringify(options),
-        def,
-        c.definition,
+        correctDef,
+        c.definition + (fragments.length > 0 ? ' (Fuente: documento procesado)' : ''),
         c.topic || cls.topic || 'Material de Estudio',
         'General',
         cls.specialty || 'General',

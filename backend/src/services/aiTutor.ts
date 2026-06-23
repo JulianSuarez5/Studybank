@@ -1,13 +1,8 @@
 import { getDb } from '../database';
+import { generateText, streamText } from './aiProvider';
 import { searchSimilar } from './embeddings';
 import { searchWeb } from './tavily';
 import { addMessage, getRecentContext, getConversationHistory } from './conversationMemory';
-
-const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
-
-function getGroqApiKey(): string {
-  return process.env.GROQ_API_KEY || '';
-}
 
 function getTavilyApiKey(): string {
   return process.env.TAVILY_API_KEY || '';
@@ -163,7 +158,7 @@ Basado en la información del perfil del usuario arriba, genera un PLAN DE ESTUD
 
 IMPORTANTE: No inventes información. Usa exclusivamente los datos del perfil proporcionado.`;
 
-  return callGroqStreaming(systemPrompt, userContent);
+  return generateText(systemPrompt, [{ role: 'user', content: userContent }]);
 }
 
 async function buildRAGContext(userId: number, query: string): Promise<string> {
@@ -209,71 +204,12 @@ export async function processTutorQuery(userId: number, query: string): Promise<
   const finalSource = internetContext ? 'internet' : hasRag ? 'database' : 'no_source';
   const userContent = `${context}\n\n=== PREGUNTA DEL USUARIO ===\n${query}\n\nIMPORTANTE: Responde usando el contexto provisto. Indica si la respuesta viene de la base de datos, documentos subidos, o búsqueda en internet.`;
 
-  const response = await callGroqStreaming(systemPrompt, userContent);
+  const response = await generateText(systemPrompt, [{ role: 'user', content: userContent }]);
   await addMessage(userId, 'assistant', response);
   return { response, source: finalSource };
 }
 
-async function callGroqStreaming(systemPrompt: string, userContent: string): Promise<string> {
-  const apiKey = getGroqApiKey();
-  if (!apiKey) {
-    return `⚠️ **Groq API no configurada**
-
-Para usar el tutor IA, necesitas configurar una clave de API de Groq.
-
-1. Ve a https://console.groq.com/ y crea una cuenta
-2. Genera una API Key
-3. Asegúrate de que el archivo \`.env\` en la carpeta \`backend/\` contenga:
-   \`\`\`
-   GROQ_API_KEY=tu-api-key-aqui
-   \`\`\`
-4. Luego reinicia el servidor.`;
-  }
-
-  const messages = [
-    { role: 'system', content: systemPrompt },
-    { role: 'user', content: userContent },
-  ];
-
-  try {
-    const response = await fetch(GROQ_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model: 'llama-3.3-70b-versatile',
-        messages,
-        temperature: 0.4,
-        max_tokens: 4096,
-      }),
-    });
-
-    if (!response.ok) {
-      const errText = await response.text();
-      console.error('Groq API error:', response.status, errText);
-      return `⚠️ Error al conectar con Groq API (${response.status}). Verifica que tu API key sea válida.`;
-    }
-
-    const data = await response.json() as any;
-    const text = data?.choices?.[0]?.message?.content;
-    if (!text) return '⚠️ No se pudo obtener respuesta del tutor.';
-    return text;
-  } catch (err: any) {
-    console.error('Groq API error:', err);
-    return `⚠️ Error de conexión con Groq: ${err.message}.`;
-  }
-}
-
 export async function streamTutorResponse(userId: number, query: string, onChunk: (chunk: string) => void): Promise<string> {
-  const apiKey = getGroqApiKey();
-  if (!apiKey) {
-    const msg = 'Configura GROQ_API_KEY en el archivo .env';
-    onChunk(msg);
-    return msg;
-  }
-
   await addMessage(userId, 'user', query);
 
   const systemPrompt = buildSystemPrompt();
@@ -287,63 +223,13 @@ export async function streamTutorResponse(userId: number, query: string, onChunk
   const conversationHistory = await getConversationHistory(userId, 8);
 
   const messages = [
-    { role: 'system', content: systemPrompt },
     ...conversationHistory.slice(-6).map(m => ({ role: m.role as 'user' | 'assistant', content: m.content })),
     { role: 'user' as const, content: `${context}\n\n=== PREGUNTA ===\n${query}` },
   ];
 
-  try {
-    const response = await fetch(GROQ_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model: 'llama-3.3-70b-versatile',
-        messages,
-        temperature: 0.4,
-        max_tokens: 4096,
-        stream: true,
-      }),
-    });
-
-    if (!response.ok) { const err = `⚠️ Error Groq: ${response.status}`; onChunk(err); return err; }
-
-    const reader = response.body?.getReader();
-    if (!reader) { const err = '⚠️ No se pudo leer la respuesta'; onChunk(err); return err; }
-
-    const decoder = new TextDecoder();
-    let fullResponse = '';
-    let buffer = '';
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
-
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed || !trimmed.startsWith('data: ')) continue;
-        const data = trimmed.slice(6);
-        if (data === '[DONE]') continue;
-        try {
-          const parsed = JSON.parse(data);
-          const delta = parsed?.choices?.[0]?.delta?.content;
-          if (delta) { fullResponse += delta; onChunk(delta); }
-        } catch { }
-      }
-    }
-
-    await addMessage(userId, 'assistant', fullResponse);
-    return fullResponse;
-  } catch (err: any) {
-    const msg = `⚠️ Error: ${err.message}`;
-    onChunk(msg);
-    return msg;
-  }
+  const fullResponse = await streamText(systemPrompt, messages, onChunk);
+  if (fullResponse) await addMessage(userId, 'assistant', fullResponse);
+  return fullResponse;
 }
 
 export async function generateAIExam(userId: number, config: {
@@ -441,7 +327,7 @@ Basado en estos datos, genera un informe completo de desempeño que incluya:
 6. Plan de estudio sugerido
 7. Probabilidad estimada de aprobar`;
 
-  return callGroqStreaming(systemPrompt, userContent);
+  return generateText(systemPrompt, [{ role: 'user', content: userContent }]);
 }
 
 export { buildUserProfile };

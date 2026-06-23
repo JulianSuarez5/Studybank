@@ -4,6 +4,26 @@ import { getDb } from '../database';
 
 const router = Router();
 
+router.post('/', authMiddleware, async (req: AuthRequest, res: Response) => {
+  try {
+    const db = getDb();
+    const { front, back, topic, subtopic, specialty, difficulty, tags } = req.body;
+    if (!front || !back) return res.status(400).json({ error: 'front y back son requeridos' });
+
+    const result = await db.prepare(`
+      INSERT INTO flashcards (user_id, front, back, topic, subtopic, specialty, difficulty, tags)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    `).run(
+      req.userId!, front, back,
+      topic || 'General', subtopic || 'General',
+      specialty || 'General', difficulty || 'medio', tags || ''
+    );
+
+    const card = await db.prepare('SELECT * FROM flashcards WHERE id = $1').get(result.lastInsertRowid);
+    res.json(card);
+  } catch (err: any) { res.status(500).json({ error: err.message }); }
+});
+
 router.get('/', authMiddleware, async (req: AuthRequest, res: Response) => {
   try {
     const db = getDb();
