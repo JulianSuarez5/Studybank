@@ -4,6 +4,34 @@ interface Classification {
   specialty: string;
 }
 
+const MEDICAL_BROAD = [
+  { pattern: /nervio|neurona|axón|sinapsis|dendrita|mielina|ganglio|plexo|reflejo|reflejo/i, specialty: 'Medicina', topic: 'Neurología', subtopic: 'Neuroanatomía', weight: 12 },
+  { pattern: /músculo|muscular|contracción|fibra muscular|sarcómero|miofibrilla|inserción/i, specialty: 'Medicina', topic: 'Anatomía', subtopic: 'Sistema Muscular', weight: 10 },
+  { pattern: /hueso|esqueleto|articulación|cartílago|ligamento|tendón|periostio|fractura/i, specialty: 'Medicina', topic: 'Anatomía', subtopic: 'Sistema Óseo', weight: 10 },
+  { pattern: /corazón|cardíaco|miocardio|aurícula|ventrículo|sístole|diástole|latido/i, specialty: 'Medicina', topic: 'Cardiología', subtopic: 'Anatomía Cardíaca', weight: 10 },
+  { pattern: /pulmón|pulmonar|alvéolo|bronquio|tráquea|respiración|ventilación|oxígeno/i, specialty: 'Medicina', topic: 'Neumología', subtopic: 'General', weight: 10 },
+  { pattern: /sangre|vaso|arteria|vena|capilar|circulación|flujo|hemorragia|coágulo/i, specialty: 'Medicina', topic: 'Anatomía', subtopic: 'Sistema Cardiovascular', weight: 10 },
+  { pattern: /cerebro|cerebelo|tronco|encéfalo|bulbo|protuberancia|mesencéfalo|tálamo|hipotálamo|ganglios basales|cisura|circunvolución|lóbulo/i, specialty: 'Medicina', topic: 'Neurología', subtopic: 'Neuroanatomía', weight: 15 },
+  { pattern: /médula|espinal|raquídeo|raíz|nervio espinal|columna|vértebra|disco/i, specialty: 'Medicina', topic: 'Neurología', subtopic: 'Médula Espinal', weight: 12 },
+  { pattern: /pupila|fotomotor|consensual|reflejo pupilar|acomodación|miosis|midriasis|iris/i, specialty: 'Medicina', topic: 'Neurología', subtopic: 'Reflejos', weight: 12 },
+  { pattern: /fisura orbitaria|hendidura|foramen|agujero|canal|conducto|hiato|meato/i, specialty: 'Medicina', topic: 'Anatomía', subtopic: 'Cabeza y Cuello', weight: 12 },
+  { pattern: /nervio craneal|par craneal|olfatorio|óptico|oculomotor|troclear|trigémino|abducens|facial|vestibulococlear|glosofaríngeo|vago|accesorio|hipogloso/i, specialty: 'Medicina', topic: 'Neurología', subtopic: 'Nervios Craneales', weight: 20 },
+  { pattern: /trigémino|oftálmica|maxilar|mandibular|V1|V2|V3|nervio V/i, specialty: 'Medicina', topic: 'Neurología', subtopic: 'Nervio Trigémino', weight: 15 },
+  { pattern: /facial|parálisis facial|Bell|mímica|expresión facial|nervio VII|nervio facial/i, specialty: 'Medicina', topic: 'Neurología', subtopic: 'Nervio Facial', weight: 12 },
+  { pattern: /plexo braquial|braquial|radial|mediano|cubital|musculocutáneo|axilar|nervio periférico/i, specialty: 'Medicina', topic: 'Neurología', subtopic: 'Plexo Braquial', weight: 18 },
+  { pattern: /sensibilidad|sensitivo|sensorial|táctil|dolor|temperatura|vibratorio|propiocepción|discriminación/i, specialty: 'Medicina', topic: 'Neurología', subtopic: 'Sensibilidad', weight: 10 },
+  { pattern: /motor|motora|motoneurona|neurona motora|unidad motora|placa motora|contracción|movimiento/i, specialty: 'Medicina', topic: 'Neurología', subtopic: 'Sistema Motor', weight: 10 },
+  { pattern: /hiperreflexia|hiporreflexia|arreflexia|clono|Babinski|Hoffman|Romberg|Nistagmo/i, specialty: 'Medicina', topic: 'Neurología', subtopic: 'Reflejos', weight: 15 },
+  { pattern: /maseterino|temporal|pterigoideo|masticación|ATM|masetero/i, specialty: 'Medicina', topic: 'Neurología', subtopic: 'Nervio Trigémino', weight: 12 },
+  { pattern: /parpadeo|parpado|párpado|ptosis|blefaroptosis|orbicular|elevador del párpado/i, specialty: 'Medicina', topic: 'Neurología', subtopic: 'Nervio Facial', weight: 10 },
+  { pattern: /antebrazo|brazo|mano|dedo|muñeca|codo|hombro|extremidad|miembro/i, specialty: 'Medicina', topic: 'Anatomía', subtopic: 'Extremidades', weight: 8 },
+  { pattern: /flexión|extensión|abducción|aductor|supinación|pronación|rotación|oposición|pulgar|pinza/i, specialty: 'Medicina', topic: 'Anatomía', subtopic: 'Movimientos', weight: 8 },
+  { pattern: /paciente|exploración|examen neurológico|evaluación|hallazgo|clínico|signo|semiología/i, specialty: 'Medicina', topic: 'Semiología', subtopic: 'Exploración', weight: 8 },
+  { pattern: /lesión|compromiso|afectación|daño|traumatismo|sección|ruptura|desgarro/i, specialty: 'Medicina', topic: 'Patología', subtopic: 'Lesiones', weight: 8 },
+  { pattern: /supranuclear|nuclear|infranuclear|neurona motora superior|neurona motora inferior|NMS|NMI/i, specialty: 'Medicina', topic: 'Neurología', subtopic: 'Sistema Motor', weight: 20 },
+  { pattern: /déficit|pérdida|ausencia|incapacidad|parálisis|plejía|paresia|parálisis/i, specialty: 'Medicina', topic: 'Neurología', subtopic: 'Déficits', weight: 10 },
+];
+
 const KEYWORDS: Record<string, { pattern: RegExp; specialty: string; topic: string; subtopic: string; weight: number }[]> = {
   medicina: [
     { pattern: /anatomía|anatomy|hueso|músculo|órgano|tejido|sistema nervioso|corazón|pulmón/i, specialty: 'Medicina', topic: 'Anatomía', subtopic: 'General', weight: 10 },
@@ -67,6 +95,16 @@ const KEYWORDS: Record<string, { pattern: RegExp; specialty: string; topic: stri
 
 export function classifyContent(text: string): Classification {
   let best: { specialty: string; topic: string; subtopic: string; weight: number } | null = null;
+
+  for (const entry of MEDICAL_BROAD) {
+    const matches = text.match(entry.pattern);
+    if (matches) {
+      const matchWeight = entry.weight * matches.length;
+      if (!best || matchWeight > best.weight) {
+        best = { specialty: entry.specialty, topic: entry.topic, subtopic: entry.subtopic, weight: matchWeight };
+      }
+    }
+  }
 
   for (const [, entries] of Object.entries(KEYWORDS)) {
     for (const entry of entries) {

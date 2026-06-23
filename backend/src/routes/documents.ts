@@ -80,14 +80,17 @@ router.post('/upload', authMiddleware, upload.single('file'), async (req: AuthRe
     }
     response.summariesExtracted = (response.summariesExtracted || 0) + parsed.summaries.length;
 
-    if (docType === 'theory' || docType === 'mixed' || (docType === 'questions' && parsed.questions.length === 0)) {
+    {
       const theoryResult = await processTheoryDocument(user_id, documentId, rawText, original_name);
 
       response.aiConceptsExtracted = theoryResult.conceptsExtracted;
-      response.aiQuestionsGenerated = theoryResult.questionsGenerated;
       response.aiFlashcardsGenerated = theoryResult.flashcardsGenerated;
       response.aiSummariesGenerated = theoryResult.summariesGenerated;
       response.aiProcessed = true;
+
+      if (docType === 'theory' || (docType === 'mixed' && parsed.questions.length === 0)) {
+        response.aiQuestionsGenerated = theoryResult.questionsGenerated;
+      }
     }
 
     const summary = JSON.stringify({

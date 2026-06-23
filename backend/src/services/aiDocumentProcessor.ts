@@ -338,6 +338,56 @@ export async function processTheoryDocument(
   const db = getDb();
   const cls = classifyContent(text.substring(0, 2000));
 
+  if (totalConcepts === 0 && text.length > 100) {
+    try {
+      const prompt = `Extrae los conceptos clave de este texto. Para cada concepto da una definición breve.
+
+Texto:
+${text.substring(0, 2000)}
+
+Responde SOLO JSON: [{"concept":"nombre","definition":"definición"}] (máximo 5 conceptos)`;
+
+      const aiResult = await generateText(
+        'Eres un asistente que extrae conceptos de textos educativos. Responde solo JSON.',
+        [{ role: 'user', content: prompt }]
+      );
+
+      const parsed = parseJsonResponse(aiResult);
+      if (Array.isArray(parsed)) {
+        for (const item of parsed) {
+          const concept = String(item.concept || '').trim();
+          const definition = String(item.definition || '').trim();
+          if (concept.length > 3 && definition.length > 10) {
+            const clsItem = classifyContent(concept + ' ' + definition);
+            await db.prepare(
+              'INSERT INTO key_concepts (user_id, concept, definition, topic) VALUES ($1, $2, $3, $4)'
+            ).run(userId, concept.substring(0, 200), definition.substring(0, 500), clsItem.topic || cls.topic || 'Material de Estudio');
+            totalConcepts++;
+
+            const qVariations = ['¿Qué es', 'Define:', 'Explica brevemente', '¿En qué consiste'];
+            const front = `${qVariations[Math.floor(Math.random() * qVariations.length)]} ${concept}?`;
+            await db.prepare(`
+              INSERT INTO flashcards (user_id, document_id, front, back, topic, subtopic, specialty, difficulty, tags)
+              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            `).run(
+              userId, documentId,
+              front.substring(0, 200),
+              definition.substring(0, 200),
+              clsItem.topic || cls.topic || 'Material de Estudio',
+              clsItem.subtopic || 'General',
+              clsItem.specialty || cls.specialty || 'General',
+              definition.length > 50 ? 'medio' : 'fácil',
+              ''
+            );
+            totalFlashcards++;
+          }
+        }
+      }
+    } catch (e) {
+      console.error('AI concept extraction fallback error:', e);
+    }
+  }
+
   let totalSummaries = 0;
   const summaryLines: string[] = [];
   const summaryHeaders = /^(resumen|summary|conclusión|conclusion|ideas clave|key points|síntesis)/i;
