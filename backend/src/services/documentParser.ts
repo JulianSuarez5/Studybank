@@ -524,12 +524,17 @@ export async function parseDocument(
       }
     }
 
-    if (text.trim().length < 500 && buffer.length > 100000) {
-      console.log(`[Parser] Text too short for PDF size (${buffer.length} bytes). Trying Gemini OCR...`);
+    const textLen = text.trim().length;
+    const ratioToFile = textLen / buffer.length;
+    if (textLen < 5000 && buffer.length > 200000 && ratioToFile < 0.05) {
+      console.log(`[Parser] Text (${textLen} chars) is low relative to PDF size (${buffer.length} bytes, ratio=${(ratioToFile*100).toFixed(1)}%). Trying Gemini OCR...`);
       const ocrText = await ocrPdfWithGemini(buffer);
-      if (ocrText && ocrText.length > text.length) {
+      if (ocrText && ocrText.length > textLen) {
+        console.log(`[Parser] OCR mejoró el texto: ${ocrText.length} chars (antes ${textLen})`);
         text = ocrText;
         usedOcr = true;
+      } else {
+        console.log(`[Parser] OCR no mejoró (${ocrText?.length || 0} chars), usando texto extraído`);
       }
     }
 

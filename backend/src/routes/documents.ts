@@ -50,7 +50,8 @@ router.post('/upload', authMiddleware, upload.single('file'), async (req: AuthRe
         const qResult = await db.prepare(`
           INSERT INTO questions (document_id, user_id, statement, options, correct_answer, explanation, topic, subtopic, specialty, origin)
           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-        `).run(documentId, user_id, q.statement, JSON.stringify(q.options), q.correctAnswer, q.explanation, q.topic, q.subtopic, q.specialty, 'DOCUMENT');
+        `).run(documentId, user_id, q.statement, JSON.stringify(q.options), q.correctAnswer, q.explanation, q.topic, q.subtopic, q.specialty, 'literal');
+        console.log(`[QUESTIONS] Guardada pregunta literal #${qResult.lastInsertRowid}: "${q.statement.substring(0, 60)}..."`);
         const qId = qResult.lastInsertRowid;
 
         if (q.explanation) {
@@ -62,11 +63,25 @@ router.post('/upload', authMiddleware, upload.single('file'), async (req: AuthRe
       response.questionsFound = parsed.questions.length;
     }
 
+    let conceptsSaved = 0;
     for (const concept of parsed.concepts) {
+      if (!concept.includes(': ')) {
+        console.log(`[CONCEPT] Saltado (sin definición): "${concept.substring(0, 50)}..."`);
+        continue;
+      }
+      const parts = concept.split(/:\s*/);
+      const conceptPart = parts[0].trim();
+      const definitionPart = parts.slice(1).join(': ').trim();
+      if (conceptPart.length < 5 || !definitionPart || definitionPart.length < 10) {
+        console.log(`[CONCEPT] Saltado (definición insuficiente): "${concept.substring(0, 50)}..."`);
+        continue;
+      }
       await db.prepare('INSERT INTO key_concepts (user_id, concept, definition, topic) VALUES ($1, $2, $3, $4)')
-        .run(user_id, concept, '', '');
+        .run(user_id, conceptPart.substring(0, 200), definitionPart.substring(0, 500), '');
+      conceptsSaved++;
     }
-    response.conceptsExtracted = (response.conceptsExtracted || 0) + parsed.concepts.length;
+    response.conceptsExtracted = (response.conceptsExtracted || 0) + conceptsSaved;
+    console.log(`[CONCEPT] Guardados ${conceptsSaved} conceptos de ${parsed.concepts.length} candidatos`);
 
     for (const table of parsed.tables) {
       await db.prepare('INSERT INTO summaries (user_id, title, content, topic) VALUES ($1, $2, $3, $4)')
@@ -81,7 +96,8 @@ router.post('/upload', authMiddleware, upload.single('file'), async (req: AuthRe
     response.summariesExtracted = (response.summariesExtracted || 0) + parsed.summaries.length;
 
     {
-      const theoryResult = await processTheoryDocument(user_id, documentId, rawText, original_name);
+      const hasRealQuestions = parsed.questions.length > 0;
+      const theoryResult = await processTheoryDocument(user_id, documentId, rawText, original_name, hasRealQuestions);
 
       response.aiConceptsExtracted = theoryResult.conceptsExtracted;
       response.aiFlashcardsGenerated = theoryResult.flashcardsGenerated;

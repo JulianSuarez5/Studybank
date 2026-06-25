@@ -449,7 +449,8 @@ export async function processTheoryDocument(
   userId: number,
   documentId: number,
   text: string,
-  filename: string
+  filename: string,
+  hasRealQuestions: boolean = false
 ): Promise<{
   conceptsExtracted: number;
   questionsGenerated: number;
@@ -566,11 +567,14 @@ Responde SOLO JSON: [{"concept":"nombre","definition":"definición"}] (máximo 5
   }
 
   let totalQuestions = 0;
-  const allConcepts = await db.prepare(
-    'SELECT concept, definition, topic FROM key_concepts WHERE user_id = $1 AND definition != \'\''
-  ).all(userId) as { concept: string; definition: string; topic: string }[];
 
-  if (allConcepts.length >= 3) {
+  if (!hasRealQuestions) {
+    console.log(`[QUESTION GEN] No hay preguntas reales en el documento. Generando preguntas desde conceptos...`);
+    const allConcepts = await db.prepare(
+      'SELECT concept, definition, topic FROM key_concepts WHERE user_id = $1 AND definition != \'\''
+    ).all(userId) as { concept: string; definition: string; topic: string }[];
+
+    if (allConcepts.length >= 3) {
     for (let i = 0; i < allConcepts.length && totalQuestions < 30; i += 2) {
       const c = allConcepts[i];
       if (!c.definition || c.definition.length < 10) continue;
@@ -615,6 +619,9 @@ Responde SOLO JSON: [{"concept":"nombre","definition":"definición"}] (máximo 5
       );
       totalQuestions++;
     }
+  }
+  } else {
+    console.log(`[QUESTION GEN] Documento tiene preguntas reales. NO se generan preguntas artificiales.`);
   }
 
   return {
