@@ -3,7 +3,7 @@ import multer from 'multer';
 import { AuthRequest, authMiddleware } from '../middleware/auth';
 import { getDb } from '../database';
 import { parseDocument } from '../services/documentParser';
-import { detectDocumentType, processTheoryDocument } from '../services/aiDocumentProcessor';
+import { detectDocumentType, processTheoryDocument, DocType } from '../services/aiDocumentProcessor';
 import { buildAndStoreEmbeddings } from '../services/embeddings';
 import path from 'path';
 
@@ -45,13 +45,17 @@ router.post('/upload', authMiddleware, upload.single('file'), async (req: AuthRe
       docType,
     };
 
-    if (docType === 'questions' || docType === 'mixed') {
+    const hasRealQuestions = parsed.questions.length > 0;
+    if (docType === 'question_bank' || docType === 'mixed' || hasRealQuestions) {
+      console.log(`[ROUTE] Guardando ${parsed.questions.length} preguntas literales del documento...`);
+      let savedCount = 0;
       for (const q of parsed.questions) {
         const qResult = await db.prepare(`
           INSERT INTO questions (document_id, user_id, statement, options, correct_answer, explanation, topic, subtopic, specialty, origin)
           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
         `).run(documentId, user_id, q.statement, JSON.stringify(q.options), q.correctAnswer, q.explanation, q.topic, q.subtopic, q.specialty, 'literal');
-        console.log(`[QUESTIONS] Guardada pregunta literal #${qResult.lastInsertRowid}: "${q.statement.substring(0, 60)}..."`);
+        savedCount++;
+        console.log(`[ROUTE] Pregunta #${savedCount}: "${q.statement.substring(0, 60)}..." ${q.options.length} ops, respuesta=${q.correctAnswer ? 'SI' : 'NO'}, explicación=${q.explanation ? 'SI' : 'NO'}`);
         const qId = qResult.lastInsertRowid;
 
         if (q.explanation) {
@@ -60,7 +64,10 @@ router.post('/upload', authMiddleware, upload.single('file'), async (req: AuthRe
         }
       }
 
-      response.questionsFound = parsed.questions.length;
+      response.questionsFound = savedCount;
+      if (savedCount === 0) console.log(`[ROUTE] No se encontraron preguntas en el documento`);
+    } else {
+      console.log(`[ROUTE] Documento tipo "${docType}" — no se extraen preguntas literales`);
     }
 
     let conceptsSaved = 0;
@@ -104,8 +111,11 @@ router.post('/upload', authMiddleware, upload.single('file'), async (req: AuthRe
       response.aiSummariesGenerated = theoryResult.summariesGenerated;
       response.aiProcessed = true;
 
-      if (docType === 'theory' || (docType === 'mixed' && parsed.questions.length === 0)) {
+      if ((docType === 'theory' || docType === 'concept_list' || docType === 'flashcard_set') && !hasRealQuestions) {
         response.aiQuestionsGenerated = theoryResult.questionsGenerated;
+        console.log(`[ROUTE] Preguntas generadas desde conceptos: ${theoryResult.questionsGenerated}`);
+      } else {
+        console.log(`[ROUTE] No se generan preguntas IA (tipo=${docType}, realQuestions=${hasRealQuestions})`);
       }
     }
 

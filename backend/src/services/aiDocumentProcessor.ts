@@ -160,46 +160,69 @@ function areSimilar(a: string, b: string, threshold: number = 0.3): boolean {
   return levenshteinDistance(na, nb) / maxLen < threshold;
 }
 
-export function detectDocumentType(text: string): 'questions' | 'theory' | 'mixed' {
-  const questionPatterns = [
-    /^\d+[.)]\s+.+\n(?:(?:[A-Da-d][.)]\s+.+\n?)+)/m,
-    /pregunta|question\s*\d+/i,
-    /opción\s*(multiple|múltiple)|seleccione|señale|escoja|elija|indique|cuál\s+es/i,
-    /respuesta\s*(correcta|incorrecta)|marque|verdadero|falso/i,
-  ];
+export type DocType = 'question_bank' | 'theory' | 'flashcard_set' | 'concept_list' | 'summary' | 'presentation' | 'mixed';
 
-  let questionScore = 0;
-  for (const pattern of questionPatterns) {
-    const matches = text.match(new RegExp(pattern.source, 'gi'));
-    if (matches) questionScore += matches.length;
-  }
+export function detectDocumentType(text: string): DocType {
+  const lines = text.split('\n').filter(l => l.trim());
+  const textLower = text.toLowerCase();
 
-  const qNumMatch = text.match(/^\d+[.)]\s+.+$/gm);
-  const optMatch = text.match(/^[A-Da-d][.)]\s+.+$/gm);
+  const qNumCount = (text.match(/^\d+[.)]\s+.+$/gm) || []).length;
+  const optCount = (text.match(/^[A-Da-d][.)]\s+.+$/gm) || []).length;
+  const flashcardCount = (text.match(/¿(Qué|Cuál|Cómo|Cuándo|Dónde|Para qué|Por qué).*\?/gi) || []).length;
+  const respCorrectaCount = (text.match(/respuesta\s+correcta\s*[:\-]/gi) || []).length;
+  const bulletCount = (text.match(/^[-•*]\s+.+$/gm) || []).length;
+  const defCount = (text.match(/(?:se define como|consiste en|se refiere a|significa)\s+/gi) || []).length;
+  const headerCount = (text.match(/^(?:capítulo|tema|unidad|lección|chapter|unit|lesson)\s+\d+/im) || []).length;
+  const tablaCount = (lines.filter(l => l.includes('|') && l.split('|').length > 3).length);
 
-  if (qNumMatch && optMatch && (optMatch.length / qNumMatch.length) >= 2) {
-    questionScore += 10;
-  }
-
-  if (questionScore >= 5) {
-    const theoryIndicators = [
-      /introducción|introduction|concepto|definición|marco\s*teórico|fundamento/i,
-      /capítulo|tema\s*\d+|unidad\s*\d+|lección|lesson|chapter/i,
-      /resumen|summary|conclusión|conclusion/i,
-    ];
-    let theoryScore = 0;
-    for (const p of theoryIndicators) {
-      if (p.test(text)) theoryScore++;
+  // 1. Question bank: numbered questions + options A-D
+  if (qNumCount >= 3 && optCount >= qNumCount * 2) {
+    if (respCorrectaCount > 0) {
+      console.log(`[DOC TYPE] Banco de preguntas (${qNumCount} preg, ${optCount} ops, ${respCorrectaCount} respuestas)`);
+      return 'question_bank';
     }
-
-    const textLen = text.length;
-    const qLen = (qNumMatch || []).reduce((sum, q) => sum + q.length, 0);
-    const theoryRatio = (textLen - qLen) / textLen;
-
-    if (theoryRatio > 0.6 && theoryScore >= 2) return 'mixed';
-    return 'questions';
+    const theoryIndicators = (text.match(/introducci[oó]n|concepto|definici[oó]n|marco\ste[oó]rico|fundamento|capi[tá]p[ií]tulo|tema\s+\d+|resumen/gi) || []).length;
+    if (theoryIndicators >= 3) {
+      console.log(`[DOC TYPE] Mixto (${qNumCount} preg + teoría)`);
+      return 'mixed';
+    }
+    console.log(`[DOC TYPE] Banco de preguntas (${qNumCount} preg, ${optCount} ops)`);
+    return 'question_bank';
   }
 
+  // 2. Flashcard set
+  if (flashcardCount >= 5 && qNumCount < 3) {
+    console.log(`[DOC TYPE] Set de flashcards (${flashcardCount} flashcards detectadas)`);
+    return 'flashcard_set';
+  }
+
+  // 3. Concept list
+  if (bulletCount >= 5 && defCount >= 2) {
+    console.log(`[DOC TYPE] Lista de conceptos (${bulletCount} items, ${defCount} definiciones)`);
+    return 'concept_list';
+  }
+
+  // 4. Theory document
+  if (headerCount >= 2 || (bulletCount >= 3 && text.length > 1000)) {
+    console.log(`[DOC TYPE] Documento teórico (${headerCount} headers, ${bulletCount} bullets)`);
+    return 'theory';
+  }
+
+  // 5. Summary
+  const summaryHeaders = ['resumen', 'summary', 'conclusión', 'conclusion', 'ideas clave', 'key points', 'síntesis'];
+  const hasSummaryHeader = summaryHeaders.some(h => textLower.startsWith(h) || textLower.includes('\n' + h));
+  if (hasSummaryHeader && text.length < 3000) {
+    console.log(`[DOC TYPE] Resumen`);
+    return 'summary';
+  }
+
+  // 6. Tables
+  if (tablaCount >= 2) {
+    console.log(`[DOC TYPE] Documento con tablas`);
+    return 'presentation';
+  }
+
+  console.log(`[DOC TYPE] Documento teórico (default)`);
   return 'theory';
 }
 
@@ -243,36 +266,42 @@ function splitIntoFragments(text: string): string[] {
   return fragments.filter(f => f.length > 50);
 }
 
-async function tryAiFlashcardGeneration(
+async function tryAiMultiFlashcardGeneration(
   concept: string,
   definition: string,
-  topic: string,
-  specialty: string
-): Promise<{ front: string; back: string } | null> {
-  const conceptPart = definition ? `${concept}: ${definition}` : concept;
-  const prompt = `Genera una flashcard educativa sobre este contenido:
+  fragmentText: string
+): Promise<{ front: string; back: string }[]> {
+  const prompt = `Basándote ESTRICTAMENTE en el contenido real de este texto, genera de 3 a 5 flashcards educativas sobre "${concept}".
 
-${conceptPart.substring(0, 300)}
+Las flashcards deben cubrir ASPECTOS DIFERENTES: qué evalúa, cuál es su función, cómo se explora, qué nervios/vías participan, tipos, etc.
+
+Texto:
+${(fragmentText || definition || '').substring(0, 600)}
 
 REGLAS:
-- Pregunta original y variada (NO empieces con "¿Qué es")
-- Respuesta clara y completa (máximo 25 palabras)
+- Extrae SOLO del texto, NO inventes información
+- NO uses el formato "¿Qué es ${concept}?"
 - Una sola idea por flashcard
-- Debe reflejar EL CONTENIDO del documento, no una definición genérica
+- Respuesta máxima 20 palabras
+- Si no hay suficiente información en el texto para 3 flashcards, genera solo 1-2
 
-Responde SOLO JSON: {"front":"pregunta","back":"respuesta"}`;
+Responde SOLO JSON: [{"front":"pregunta","back":"respuesta"}]`;
 
-  const result = await generateText('Eres un experto en crear flashcards educativas de alta calidad. Responde solo JSON.', [{ role: 'user', content: prompt }]);
-  if (!result) return null;
+  const result = await generateText('Eres un asistente que extrae flashcards del contenido textual. Responde solo JSON.', [{ role: 'user', content: prompt }]);
+  if (!result) return [];
 
   const parsed = parseJsonResponse(result);
-  if (!parsed || !parsed.front || !parsed.back) return null;
+  if (!Array.isArray(parsed)) return [];
 
-  const front = String(parsed.front).trim();
-  const back = String(parsed.back).trim();
-  if (!isValidFlashcard(front, back)) return null;
-
-  return { front, back };
+  const valid: { front: string; back: string }[] = [];
+  for (const item of parsed) {
+    const front = String(item.front || '').trim();
+    const back = String(item.back || '').trim();
+    if (isValidFlashcard(front, back) && !QUESTION_FRAGMENTS.test(front)) {
+      valid.push({ front, back });
+    }
+  }
+  return valid;
 }
 
 interface FragmentResult {
@@ -360,43 +389,42 @@ async function processFragment(
     ).run(userId, concept.substring(0, 200), definition.substring(0, 500), clsItem.topic || cls.topic || 'Material de Estudio');
     conceptCount++;
 
-    const questionVariations = [
-      `¿Qué es ${concept}?`,
-      `Define: ${concept}`,
-      `Explica brevemente ${concept}`,
-      `¿En qué consiste ${concept}?`,
-      `${concept}:`,
-    ];
-    const randomIdx = Math.floor(Math.random() * questionVariations.length);
-    let flashcardFront = questionVariations[randomIdx];
-    let flashcardBack = definition.substring(0, 200);
-
+    let aiFlashcards: { front: string; back: string }[] = [];
     if (definition && aiAttempts < 3) {
       aiAttempts++;
-      const aiFlashcard = await tryAiFlashcardGeneration(concept, definition, clsItem.topic, clsItem.specialty);
-      if (aiFlashcard) {
-        flashcardFront = aiFlashcard.front;
-        flashcardBack = aiFlashcard.back;
+      aiFlashcards = await tryAiMultiFlashcardGeneration(concept, definition, item);
+    }
+
+    if (aiFlashcards.length === 0) {
+      const qVariations = [
+        `Define: ${concept}`,
+        `Explica brevemente ${concept}`,
+        `¿En qué consiste ${concept}?`,
+      ];
+      const front = qVariations[Math.floor(Math.random() * qVariations.length)];
+      const back = definition.substring(0, 200);
+      if (isValidFlashcard(front, back)) {
+        aiFlashcards.push({ front, back });
       }
     }
 
-    if (!isValidFlashcard(flashcardFront, flashcardBack)) continue;
-
-    console.log(`[VALIDATOR] ACCEPTED flashcard INSERT: front="${flashcardFront.substring(0, 60)}" back="${flashcardBack.substring(0, 60)}"`);
-    await db.prepare(`
-      INSERT INTO flashcards (user_id, document_id, front, back, topic, subtopic, specialty, difficulty, tags)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-    `).run(
-      userId, documentId,
-      flashcardFront.substring(0, 200),
-      flashcardBack.substring(0, 200),
-      clsItem.topic || cls.topic || 'Material de Estudio',
-      clsItem.subtopic || cls.subtopic || 'General',
-      clsItem.specialty || cls.specialty || 'General',
-      definition.length > 50 ? 'medio' : 'fácil',
-      ''
-    );
-    flashcardCount++;
+    for (const fc of aiFlashcards) {
+      console.log(`[VALIDATOR] ACCEPTED flashcard INSERT: front="${fc.front.substring(0, 60)}" back="${fc.back.substring(0, 60)}"`);
+      await db.prepare(`
+        INSERT INTO flashcards (user_id, document_id, front, back, topic, subtopic, specialty, difficulty, tags)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      `).run(
+        userId, documentId,
+        fc.front.substring(0, 200),
+        fc.back.substring(0, 200),
+        clsItem.topic || cls.topic || 'Material de Estudio',
+        clsItem.subtopic || cls.subtopic || 'General',
+        clsItem.specialty || cls.specialty || 'General',
+        definition.length > 50 ? 'medio' : 'fácil',
+        ''
+      );
+      flashcardCount++;
+    }
   }
 
   for (const dp of definitionPairs) {
@@ -409,24 +437,37 @@ async function processFragment(
     ).run(userId, dp.term.substring(0, 200), dp.def.substring(0, 500), clsItem.topic || cls.topic || 'Material de Estudio');
     conceptCount++;
 
-    const simpleFront = `¿Qué es ${dp.term}?`;
-    if (!isValidFlashcard(simpleFront, dp.def.substring(0, 200))) continue;
+    let aiFlashcards: { front: string; back: string }[] = [];
+    if (dp.def.length > 15 && aiAttempts < 6) {
+      aiAttempts += 2;
+      aiFlashcards = await tryAiMultiFlashcardGeneration(dp.term, dp.def, dp.term + ': ' + dp.def);
+    }
 
-    console.log(`[VALIDATOR] ACCEPTED definitionPair flashcard INSERT: front="${simpleFront}" back="${dp.def.substring(0, 60)}..."`);
-    await db.prepare(`
-      INSERT INTO flashcards (user_id, document_id, front, back, topic, subtopic, specialty, difficulty, tags)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-    `).run(
-      userId, documentId,
-      simpleFront.substring(0, 200),
-      dp.def.substring(0, 200),
-      clsItem.topic || cls.topic || 'Material de Estudio',
-      clsItem.subtopic || cls.subtopic || 'General',
-      clsItem.specialty || cls.specialty || 'General',
-      dp.def.length > 50 ? 'medio' : 'fácil',
-      ''
-    );
-    flashcardCount++;
+    if (aiFlashcards.length === 0) {
+      const front = `Define: ${dp.term}`;
+      const back = dp.def.substring(0, 200);
+      if (isValidFlashcard(front, back)) {
+        aiFlashcards.push({ front, back });
+      }
+    }
+
+    for (const fc of aiFlashcards) {
+      console.log(`[VALIDATOR] ACCEPTED definitionPair flashcard INSERT: front="${fc.front.substring(0, 60)}" back="${fc.back.substring(0, 60)}..."`);
+      await db.prepare(`
+        INSERT INTO flashcards (user_id, document_id, front, back, topic, subtopic, specialty, difficulty, tags)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      `).run(
+        userId, documentId,
+        fc.front.substring(0, 200),
+        fc.back.substring(0, 200),
+        clsItem.topic || cls.topic || 'Material de Estudio',
+        clsItem.subtopic || cls.subtopic || 'General',
+        clsItem.specialty || cls.specialty || 'General',
+        dp.def.length > 50 ? 'medio' : 'fácil',
+        ''
+      );
+      flashcardCount++;
+    }
   }
 
   if (conceptCount === 0) {
@@ -471,17 +512,27 @@ export async function processTheoryDocument(
   const db = getDb();
   const cls = classifyContent(text.substring(0, 2000));
 
-  if (totalConcepts === 0 && text.length > 100) {
+  if (text.length > 500 && totalConcepts < 5) {
     try {
-      const prompt = `Extrae los conceptos clave de este texto. Para cada concepto da una definición breve.
+      const textSample = text.substring(0, 2500);
+      const prompt = `Del siguiente texto, EXTRAE ÚNICAMENTE los conceptos que aparecen EXPLÍCITAMENTE.
+
+Para cada concepto que encuentres en el texto, proporciona:
+- concept: el término exacto
+- definition: la definición textual (entre 15 y 150 caracteres)
+- topic: el tema al que pertenece
+- subtopic: subtema específico (opcional, máximo 50 caracteres)
+
+IMPORTANTE: NO inventes conceptos ni definiciones. Cada concepto debe estar LITERALMENTE en el texto.
 
 Texto:
-${text.substring(0, 2000)}
+${textSample}
 
-Responde SOLO JSON: [{"concept":"nombre","definition":"definición"}] (máximo 5 conceptos)`;
+Responde SOLO JSON. Máximo 10 conceptos.
+Formato: [{"concept":"...","definition":"...","topic":"...","subtopic":"..."}]`;
 
       const aiResult = await generateText(
-        'Eres un asistente que extrae conceptos de textos educativos. Responde solo JSON.',
+        'Eres un asistente que extrae conceptos literalmente del texto. Responde solo JSON. No inventes nada.',
         [{ role: 'user', content: prompt }]
       );
 
@@ -490,45 +541,59 @@ Responde SOLO JSON: [{"concept":"nombre","definition":"definición"}] (máximo 5
         for (const item of parsed) {
           const concept = String(item.concept || '').trim();
           const definition = String(item.definition || '').trim();
+          const topic = String(item.topic || '').trim();
+          const subtopic = String(item.subtopic || '').trim();
           const combined = concept + ': ' + definition;
           if (concept.length < 5) {
-            console.log(`[VALIDATOR] REJECTED AI concepto: concepto muy corto — "${concept}"`);
+            console.log(`[AI CONCEPT] REJECTED: concepto muy corto — "${concept}"`);
             continue;
           }
           if (!definition || definition.length < 15) {
-            console.log(`[VALIDATOR] REJECTED AI concepto: definición vacía o corta para "${concept}"`);
+            console.log(`[AI CONCEPT] REJECTED "${concept}": definición insuficiente`);
             continue;
           }
-          if (!isStudyMaterial(combined)) continue;
+          if (!isStudyMaterial(combined)) {
+            console.log(`[AI CONCEPT] REJECTED "${concept}": no es material de estudio`);
+            continue;
+          }
           const clsItem = classifyContent(combined);
-          console.log(`[VALIDATOR] ACCEPTED AI concept INSERT: "${concept}" → "${definition.substring(0, 60)}..."`);
+          const finalTopic = topic || clsItem.topic || cls.topic || 'Material de Estudio';
+          const finalSubtopic = subtopic || clsItem.subtopic || 'General';
+          console.log(`[AI CONCEPT] ACCEPTED: "${concept}" → "${definition.substring(0, 60)}..." tema=${finalTopic}`);
           await db.prepare(
             'INSERT INTO key_concepts (user_id, concept, definition, topic) VALUES ($1, $2, $3, $4)'
-          ).run(userId, concept.substring(0, 200), definition.substring(0, 500), clsItem.topic || cls.topic || 'Material de Estudio');
+          ).run(userId, concept.substring(0, 200), definition.substring(0, 500), finalTopic);
           totalConcepts++;
 
-          const qVariations = ['Define:', 'Explica brevemente', '¿En qué consiste'];
-          const front = `${qVariations[Math.floor(Math.random() * qVariations.length)]} ${concept}?`;
-          if (!isValidFlashcard(front, definition.substring(0, 200))) continue;
-          console.log(`[VALIDATOR] ACCEPTED AI flashcard INSERT: front="${front.substring(0, 60)}" back="${definition.substring(0, 60)}..."`);
-          await db.prepare(`
-            INSERT INTO flashcards (user_id, document_id, front, back, topic, subtopic, specialty, difficulty, tags)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-          `).run(
-            userId, documentId,
-            front.substring(0, 200),
-            definition.substring(0, 200),
-            clsItem.topic || cls.topic || 'Material de Estudio',
-            clsItem.subtopic || 'General',
-            clsItem.specialty || cls.specialty || 'General',
-            definition.length > 50 ? 'medio' : 'fácil',
-            ''
-          );
-          totalFlashcards++;
+          const aiFlashcards = await tryAiMultiFlashcardGeneration(concept, definition, combined);
+          if (aiFlashcards.length === 0) {
+            const fallbackFront = `Define: ${concept}`;
+            const fallbackBack = definition.substring(0, 200);
+            if (isValidFlashcard(fallbackFront, fallbackBack)) {
+              aiFlashcards.push({ front: fallbackFront, back: fallbackBack });
+            }
+          }
+          for (const fc of aiFlashcards) {
+            console.log(`[AI CONCEPT] Flashcard: "${fc.front.substring(0, 50)}" → "${fc.back.substring(0, 50)}"`);
+            await db.prepare(`
+              INSERT INTO flashcards (user_id, document_id, front, back, topic, subtopic, specialty, difficulty, tags)
+              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            `).run(
+              userId, documentId,
+              fc.front.substring(0, 200),
+              fc.back.substring(0, 200),
+              finalTopic,
+              finalSubtopic,
+              clsItem.specialty || cls.specialty || 'General',
+              definition.length > 50 ? 'medio' : 'fácil',
+              ''
+            );
+            totalFlashcards++;
+          }
         }
       }
     } catch (e) {
-      console.error('AI concept extraction fallback error:', e);
+      console.error('[AI CONCEPT] Error:', e);
     }
   }
 

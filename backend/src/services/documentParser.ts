@@ -23,45 +23,43 @@ function extractAnswerKey(text: string): Map<number, string> {
   const answerKey = new Map<number, string>();
   const lines = text.split('\n');
 
-  let inAnswerSection = false;
+  let sequentialNum = 1;
 
-  for (const line of lines) {
-    const trimmed = line.trim();
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = lines[i].trim();
     if (!trimmed) continue;
 
-    if (/^(respuestas?|clave|answer\s*key|soluci[oó]n|solucionario|hoja\s+de\s+respuestas)/i.test(trimmed)) {
-      inAnswerSection = true;
+    // "RESPUESTA CORRECTA: X" — possibly with surrounding markdown or extra chars
+    let match = trimmed.match(/respuesta\s+correcta\s*[:\-]?\s*([A-Da-d])\s*$/i);
+    if (!match) match = trimmed.match(/respuesta\s+correcta\s*[:\-]?\s*([A-Da-d])\s*[:.\-]?\s*$/i);
+    if (match) {
+      const letter = match[1].toUpperCase();
+      answerKey.set(sequentialNum, letter);
+      console.log(`[ANSWER KEY] Secuencial #${sequentialNum} → ${letter} (línea: "${trimmed.substring(0, 60)}")`);
+
+      // Collect explanation from following lines
+      let explLines: string[] = [];
+      for (let j = i + 1; j < lines.length; j++) {
+        const nextLine = lines[j].trim();
+        if (!nextLine) continue;
+        if (/^(pregunta\s+n[uú]mero|respuesta\s+correcta|carpe\s+diem|xx+)/i.test(nextLine)) break;
+        if (/^[*]{2}/.test(nextLine)) break;
+        if (nextLine.length < 5) continue;
+        explLines.push(nextLine);
+        if (explLines.join(' ').length > 500) break;
+      }
+      if (explLines.length > 0) {
+        const explanation = explLines.join(' ');
+        console.log(`[ANSWER KEY] Explicación para #${sequentialNum}: "${explanation.substring(0, 80)}..."`);
+        answerKey.set(-sequentialNum, explanation);
+      }
+
+      sequentialNum++;
       continue;
-    }
-
-    if (/^\d+\s*[.)\]]?\s*[-–]\s*[A-Da-d]\s*$/.test(trimmed)) {
-      const parts = trimmed.split(/[-–]/);
-      const num = parseInt(parts[0].replace(/[^0-9]/g, ''));
-      const letter = parts[1]?.trim()?.[0]?.toUpperCase();
-      if (num > 0 && letter && /[A-D]/.test(letter)) {
-        answerKey.set(num, letter);
-        inAnswerSection = true;
-        continue;
-      }
-    }
-
-    if (/^(\d+)\s*[.)\]]?\s*([A-Da-d])\s*$/.test(trimmed)) {
-      const m = trimmed.match(/^(\d+)\s*[.)\]]?\s*([A-Da-d])\s*$/);
-      if (m) {
-        const num = parseInt(m[1]);
-        const letter = m[2].toUpperCase();
-        if (inAnswerSection || trimmed.length < 8) {
-          answerKey.set(num, letter);
-          continue;
-        }
-      }
-    }
-
-    if (inAnswerSection && trimmed.length > 20) {
-      inAnswerSection = false;
     }
   }
 
+  console.log(`[ANSWER KEY] Total respuestas encontradas: ${answerKey.size} entradas`);
   return answerKey;
 }
 
@@ -79,9 +77,25 @@ function extractQuestionsFromText(text: string): ExtractedQuestion[] {
   const correctMarkerRegex = /^\s*(\*{1,2}|[Rr][.:]|[Rr]espuesta[.:]|[Cc]orrecta[.:]|[Cc]lave[.:]|[✓✗X])\s*[.:]?\s*([a-dA-D])/i;
   const questionNumberRegex = /^(\d+[.)])\s*(.+)/;
   const answerLineRegex = /^(respuesta|rta|clave)\s*[.:]\s*(.+)/i;
+  const respuestaCorrectaLine = /^(?:respuesta\s+correcta|respuesta|rta)\s*[:\-]?\s*([A-Da-d])\s*(.*)/i;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
+
+    const rcMatch = line.match(respuestaCorrectaLine);
+    if (rcMatch && currentQuestion) {
+      const answerLetter = rcMatch[1].toUpperCase();
+      const letterIndex = answerLetter.charCodeAt(0) - 65;
+      if (letterIndex >= 0 && letterIndex < currentOptions.length) {
+        currentQuestion.correctAnswer = currentOptions[letterIndex];
+      }
+      collectingExplanation = true;
+      const extraText = rcMatch[2].trim();
+      if (extraText && extraText.length > 2 && !/^[A-Da-d]\s*$/.test(extraText)) {
+        explanationText = extraText;
+      }
+      continue;
+    }
 
     if (correctMarkerRegex.test(line)) {
       const match = line.match(correctMarkerRegex);
@@ -105,6 +119,8 @@ function extractQuestionsFromText(text: string): ExtractedQuestion[] {
 
     if (collectingExplanation) {
       if (line.match(/^\d+[.)]/) || line.match(/^\d+\.\s/) || line.match(/^[a-dA-D][.)]\s/)) {
+        collectingExplanation = false;
+      } else if (line.match(/^(?:respuesta\s+correcta|respuesta|rta)\s*[:\-]?\s*[A-Da-d]/i)) {
         collectingExplanation = false;
       } else {
         explanationText += (explanationText ? ' ' : '') + line;
@@ -162,12 +178,18 @@ function extractQuestionsFromText(text: string): ExtractedQuestion[] {
       const idx = letter.charCodeAt(0) - 65;
       if (idx >= 0 && idx < opts.length) {
         q.correctAnswer = opts[idx];
+        console.log(`[QUESTIONS] Respuesta asignada desde clave #${num} → opción ${letter}`);
       }
     }
-    if (q.statement && opts.length >= 2) {
-      q.options = opts;
-      questions.push(q as ExtractedQuestion);
+    if (!q.explanation && answerKey.has(-num)) {
+      q.explanation = answerKey.get(-num);
+      console.log(`[QUESTIONS] Explicación asignada desde clave #${num}`);
     }
+    if (!q.statement) continue;
+    q.options = opts;
+    questions.push(q as ExtractedQuestion);
+    const estado = opts.length >= 2 ? (q.correctAnswer ? 'completa' : 'sin respuesta') : 'incompleta (sin opciones)';
+    console.log(`[QUESTIONS] #${num} "${q.statement.substring(0, 60)}..." → ${opts.length} ops, ${estado}`);
   }
 
   return questions;
