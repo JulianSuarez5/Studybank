@@ -173,20 +173,103 @@ function extractQuestionsFromText(text: string): ExtractedQuestion[] {
   return questions;
 }
 
-const FRAGMENT_ENDINGS = /(el|la|los|las|de|del|por|para|con|sin|que|es|se|su|un|una|lo|al|del|en|y|o|a|e|i|no|más|pero|como|cuando|donde|este|esta|esto|eso|esa|ese|muy|tan|tal|tras|entre|según|mediante|durante|sin|sobre|ante|cabe|yo|tu|él|nos|os|les|mis|tus|sus|son|era|fue|será|sea|sido|han|has|había|habrá|hay|haya|hubo)$/i;
+const FRAGMENT_ENDINGS = /\b(el|la|los|las|de|del|por|para|con|sin|que|es|se|su|un|una|lo|al|en|y|no|o|a|e|i|más|pero|como|cuando|donde|este|esta|esto|eso|esa|ese|muy|tan|tal|tras|entre|según|mediante|durante|sin|sobre|ante|cabe|yo|tu|él|nos|les|mis|tus|sus|son|era|fue|será|sea|sido|han|has|había|habrá|hay|haya|hubo)\s*$/i;
 const PDF_ARTIFACT = /^(\.{3,}|…|•|(\d+\s*$)|(figura|tabla|gráfico|imagen|fuente|elaboración)\s+\d+|página\s+\d+|www\.|http)/i;
+const QUESTION_FRAGMENTS = /¿(Cuál|Qué|Cómo|Cuándo|Dónde|Por qué|Para qué|Quién|Cuánto|Cuáles|Quien)/i;
+const CLINICAL_QUESTION = /(el diagnóstico más probable|la interpretación más adecuada|la localización más probable|la causa más probable|el tratamiento más adecuado|la mejor opción|cuál de las siguientes|señale|indique|escoja|elija|marque|qué afirmación|cuál es|cuál sería)/i;
 
-function isValidConcept(text: string): boolean {
-  if (!text || text.length < 20 || text.length > 400) return false;
-  if (PDF_ARTIFACT.test(text)) return false;
-  if (/^[a-z]/.test(text)) return false;
-  if (FRAGMENT_ENDINGS.test(text.trim())) return false;
-  if (/^[A-Da-d][.)]\s+/.test(text)) return false;
-  if ((text.match(/\s+/g) || []).length < 3) return false;
+const TRAILING_HYPHEN = /\w-\s*$/;
+const HAS_QUESTION_MARK = /[¿?]/;
+
+function validateText(text: string, context: string): boolean {
+  if (!text) {
+    console.log(`[VALIDATOR] REJECTED ${context}: vacío`);
+    return false;
+  }
+  if (text.length < 15) {
+    console.log(`[VALIDATOR] REJECTED ${context}: menos de 15 caracteres — "${text.substring(0, 60)}"`);
+    return false;
+  }
+  if (text.length > 400) {
+    console.log(`[VALIDATOR] REJECTED ${context}: más de 400 caracteres — "${text.substring(0, 60)}..."`);
+    return false;
+  }
+  if (PDF_ARTIFACT.test(text)) {
+    console.log(`[VALIDATOR] REJECTED ${context}: artefacto PDF — "${text.substring(0, 60)}"`);
+    return false;
+  }
+  if (/^[a-z]/.test(text)) {
+    console.log(`[VALIDATOR] REJECTED ${context}: empieza en minúscula (fragmento truncado) — "${text.substring(0, 60)}"`);
+    return false;
+  }
+  const trimmedEnd = text.trim();
+  if (FRAGMENT_ENDINGS.test(trimmedEnd)) {
+    console.log(`[VALIDATOR] REJECTED ${context}: termina en conector (texto truncado) — "${text.substring(0, 60)}"`);
+    return false;
+  }
+  if (TRAILING_HYPHEN.test(trimmedEnd)) {
+    console.log(`[VALIDATOR] REJECTED ${context}: termina en guión (cortado a media palabra) — "${text.substring(0, 60)}"`);
+    return false;
+  }
+  if (/^[A-Da-d][.)]\s+/.test(text)) {
+    console.log(`[VALIDATOR] REJECTED ${context}: empieza con opción A/B/C/D — "${text.substring(0, 60)}"`);
+    return false;
+  }
+  if (/^[A-D]\b/.test(text) && !text.includes(':')) {
+    console.log(`[VALIDATOR] REJECTED ${context}: letra suelta A-D — "${text.substring(0, 60)}"`);
+    return false;
+  }
+  if ((text.match(/\s+/g) || []).length < 3) {
+    console.log(`[VALIDATOR] REJECTED ${context}: menos de 4 palabras — "${text.substring(0, 60)}"`);
+    return false;
+  }
+  if (HAS_QUESTION_MARK.test(text)) {
+    console.log(`[VALIDATOR] REJECTED ${context}: contiene signo de interrogación (¿?) — "${text.substring(0, 60)}"`);
+    return false;
+  }
+  if (QUESTION_FRAGMENTS.test(text)) {
+    console.log(`[VALIDATOR] REJECTED ${context}: fragmento de pregunta (¿Cuál/¿Qué) — "${text.substring(0, 60)}"`);
+    return false;
+  }
+  if (CLINICAL_QUESTION.test(text)) {
+    console.log(`[VALIDATOR] REJECTED ${context}: patrón de pregunta clínica — "${text.substring(0, 60)}"`);
+    return false;
+  }
+  const wordCount = (text.match(/\w+/g) || []).length;
+  if (wordCount < 4) {
+    console.log(`[VALIDATOR] REJECTED ${context}: menos de 4 palabras significativas — "${text.substring(0, 60)}"`);
+    return false;
+  }
   const words = text.split(/\s+/);
   const uniqueWords = new Set(words.map(w => w.toLowerCase()));
-  if (uniqueWords.size / words.length < 0.4) return false;
-  if (/^[A-D]\b/.test(text) && !text.includes(':')) return false;
+  if (uniqueWords.size / words.length < 0.4) {
+    console.log(`[VALIDATOR] REJECTED ${context}: poca variedad léxica — "${text.substring(0, 60)}"`);
+    return false;
+  }
+  return true;
+}
+
+function isStudyMaterial(text: string): boolean {
+  return validateText(text, 'texto');
+}
+
+function isValidConcept(text: string): boolean {
+  if (!validateText(text, 'concepto')) return false;
+  if (!text.includes(':') || !text.includes(': ')) {
+    console.log(`[VALIDATOR] REJECTED concepto: sin definición (sin ":" ) — "${text.substring(0, 60)}"`);
+    return false;
+  }
+  const parts = text.split(/:\s*/);
+  const conceptPart = parts[0].trim();
+  const definitionPart = parts.slice(1).join(': ').trim();
+  if (conceptPart.length < 5) {
+    console.log(`[VALIDATOR] REJECTED concepto: parte del concepto muy corta — "${text.substring(0, 60)}"`);
+    return false;
+  }
+  if (!definitionPart || definitionPart.length < 10) {
+    console.log(`[VALIDATOR] REJECTED concepto: definición vacía o muy corta — "${text.substring(0, 60)}"`);
+    return false;
+  }
   return true;
 }
 
@@ -198,7 +281,10 @@ function extractConcepts(text: string): string[] {
     const trimmed = line.trim();
     if (!(trimmed.startsWith('- ') || trimmed.startsWith('• ') || trimmed.startsWith('* '))) continue;
     const content = trimmed.replace(/^[-•*]\s*/, '');
-    if (isValidConcept(content)) concepts.push(content);
+    if (isValidConcept(content)) {
+      console.log(`[VALIDATOR] ACCEPTED concepto: "${content.substring(0, 80)}"`);
+      concepts.push(content);
+    }
   }
 
   return concepts;
@@ -214,7 +300,7 @@ function extractDefinitionConcepts(text: string): { concept: string; definition:
     /(.+?)\s+significa\s+(.+)/i,
     /definición\s+de\s+(.+?)[:.:]\s*(.+)/i,
     /concepto\s+de\s+(.+?)[:.:]\s*(.+)/i,
-    /^([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+[a-záéíóúñ]+){1,6}):\s+(.+?)(?:\.\s|\.$|$)/m,
+    /^([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+[a-záéíóúñ]+){1,5}):\s+(.+?)(?:\.\s|\.$|$)/m,
   ];
 
   for (const pattern of definitionPatterns) {
@@ -222,11 +308,35 @@ function extractDefinitionConcepts(text: string): { concept: string; definition:
     for (const m of matches) {
       const concept = m[1].trim();
       const definition = m[2].trim();
-      if (concept.length > 3 && concept.length < 120 && definition.length > 15 && definition.length < 500) {
-        if (FRAGMENT_ENDINGS.test(concept)) continue;
-        if (results.some(r => r.concept.toLowerCase() === concept.toLowerCase())) continue;
-        results.push({ concept, definition });
+      const combined = concept + ': ' + definition;
+      if (concept.length < 8 || concept.length > 100) {
+        console.log(`[VALIDATOR] REJECTED definición: concepto "${concept}" longitud ${concept.length} fuera de rango`);
+        continue;
       }
+      if (definition.length < 15 || definition.length > 500) {
+        console.log(`[VALIDATOR] REJECTED definición: definición "${definition.substring(0, 40)}..." longitud ${definition.length} fuera de rango`);
+        continue;
+      }
+      if (FRAGMENT_ENDINGS.test(concept)) {
+        console.log(`[VALIDATOR] REJECTED definición: concepto termina en conector — "${concept}"`);
+        continue;
+      }
+      if (/^[a-z]/.test(concept)) {
+        console.log(`[VALIDATOR] REJECTED definición: concepto empieza en minúscula — "${concept}"`);
+        continue;
+      }
+      if (HAS_QUESTION_MARK.test(combined)) {
+        console.log(`[VALIDATOR] REJECTED definición: contiene signo de interrogación — "${combined.substring(0, 60)}"`);
+        continue;
+      }
+      if ((concept.match(/\w+/g) || []).length < 2) {
+        console.log(`[VALIDATOR] REJECTED definición: concepto tiene menos de 2 palabras — "${concept}"`);
+        continue;
+      }
+      if (!isStudyMaterial(combined)) continue;
+      if (results.some(r => r.concept.toLowerCase() === concept.toLowerCase())) continue;
+      console.log(`[VALIDATOR] ACCEPTED definición: "${concept}" → "${definition.substring(0, 60)}..."`);
+      results.push({ concept, definition });
     }
   }
 
@@ -354,7 +464,7 @@ async function ocrPdfWithGemini(buffer: Buffer): Promise<string> {
   const key = process.env.GEMINI_API_KEY;
   if (!key) return '';
 
-  const model = process.env.GEMINI_MODEL || 'gemini-3.1-flash-lite';
+  const model = 'gemini-2.5-flash';
   const base64 = buffer.toString('base64');
 
   try {
@@ -459,9 +569,12 @@ export async function parseDocument(
   const definitionConcepts = extractDefinitionConcepts(text);
   for (const dc of definitionConcepts) {
     if (!concepts.some(c => c.toLowerCase().includes(dc.concept.toLowerCase()))) {
-      concepts.push(`${dc.concept}: ${dc.definition}`);
+      const merged = `${dc.concept}: ${dc.definition}`;
+      console.log(`[VALIDATOR] ACCEPTED concepto mergeado: "${merged.substring(0, 80)}"`);
+      concepts.push(merged);
     }
   }
+  console.log(`[VALIDATOR] Total conceptos después de filtro: ${concepts.length}`);
 
   const tables = extractTables(text);
   const summaries = extractSummaries(text);

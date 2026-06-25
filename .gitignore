@@ -12,3 +12,4 @@ tsconfig.tsbuildinfo
 frontend/dist/
 backend/server.log
 frontend/.env
+*.pdf

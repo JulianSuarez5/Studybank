@@ -2,15 +2,123 @@ import { getDb } from '../database';
 import { classifyContent } from './classifier';
 import { generateText } from './aiProvider';
 
-const FRAGMENT_ENDINGS = /(el|la|los|las|de|del|por|para|con|sin|que|es|se|su|un|una|lo|al|del|en|y|o|a|e|i|no|más|pero|como|cuando|donde|este|esta|esto|eso|esa|ese|muy|tan|tal|tras|entre|según|durante|sobre|ante|yo|tu|él|nos|os|les|mis|tus|sus|son|era|fue|será|sea|sido|han|has|había|habrá|hay|haya|hubo)$/i;
+const FRAGMENT_ENDINGS = /\b(el|la|los|las|de|del|por|para|con|sin|que|es|se|su|un|una|lo|al|en|y|no|o|a|e|i|más|pero|como|cuando|donde|este|esta|esto|eso|esa|ese|muy|tan|tal|tras|entre|según|mediante|durante|sin|sobre|ante|cabe|yo|tu|él|nos|les|mis|tus|sus|son|era|fue|será|sea|sido|han|has|había|habrá|hay|haya|hubo)\s*$/i;
 
-function isValidConcept(text: string): boolean {
-  if (!text || text.length < 20 || text.length > 400) return false;
-  if (/^[a-z]/.test(text)) return false;
-  if (FRAGMENT_ENDINGS.test(text.trim())) return false;
-  if (/^[A-Da-d][.)]\s+/.test(text)) return false;
-  if (/^[A-D]\b/.test(text) && !text.includes(':')) return false;
-  if ((text.match(/\s+/g) || []).length < 3) return false;
+const QUESTION_FRAGMENTS = /¿(Cuál|Qué|Cómo|Cuándo|Dónde|Por qué|Para qué|Quién|Cuánto|Cuáles|Quien)/i;
+const CLINICAL_QUESTION = /(el diagnóstico más probable|la interpretación más adecuada|la localización más probable|la causa más probable|el tratamiento más adecuado|la mejor opción|cuál de las siguientes|señale|indique|escoja|elija|marque|qué afirmación|cuál es|cuál sería)/i;
+const OPTION_LINE = /^[A-Da-d][.)]\s/;
+const TRAILING_HYPHEN = /\w-\s*$/;
+const HAS_QUESTION_MARK = /[¿?]/;
+
+function validateText(text: string, context: string): boolean {
+  if (!text) {
+    console.log(`[VALIDATOR] REJECTED ${context}: vacío`);
+    return false;
+  }
+  if (text.length < 15) {
+    console.log(`[VALIDATOR] REJECTED ${context}: menos de 15 caracteres — "${text.substring(0, 60)}"`);
+    return false;
+  }
+  if (text.length > 400) {
+    console.log(`[VALIDATOR] REJECTED ${context}: más de 400 caracteres — "${text.substring(0, 60)}..."`);
+    return false;
+  }
+  if (/^[a-z]/.test(text)) {
+    console.log(`[VALIDATOR] REJECTED ${context}: empieza en minúscula (fragmento truncado) — "${text.substring(0, 60)}"`);
+    return false;
+  }
+  const trimmedEnd = text.trim();
+  if (FRAGMENT_ENDINGS.test(trimmedEnd)) {
+    console.log(`[VALIDATOR] REJECTED ${context}: termina en conector (texto truncado) — "${text.substring(0, 60)}"`);
+    return false;
+  }
+  if (TRAILING_HYPHEN.test(trimmedEnd)) {
+    console.log(`[VALIDATOR] REJECTED ${context}: termina en guión (cortado a media palabra) — "${text.substring(0, 60)}"`);
+    return false;
+  }
+  if (OPTION_LINE.test(text)) {
+    console.log(`[VALIDATOR] REJECTED ${context}: empieza con opción A/B/C/D — "${text.substring(0, 60)}"`);
+    return false;
+  }
+  if (/^[A-D]\b/.test(text) && !text.includes(':')) {
+    console.log(`[VALIDATOR] REJECTED ${context}: letra suelta A-D — "${text.substring(0, 60)}"`);
+    return false;
+  }
+  if ((text.match(/\s+/g) || []).length < 3) {
+    console.log(`[VALIDATOR] REJECTED ${context}: menos de 4 palabras — "${text.substring(0, 60)}"`);
+    return false;
+  }
+  if (HAS_QUESTION_MARK.test(text)) {
+    console.log(`[VALIDATOR] REJECTED ${context}: contiene signo de interrogación (¿?) — "${text.substring(0, 60)}"`);
+    return false;
+  }
+  if (QUESTION_FRAGMENTS.test(text)) {
+    console.log(`[VALIDATOR] REJECTED ${context}: fragmento de pregunta (¿Cuál/¿Qué) — "${text.substring(0, 60)}"`);
+    return false;
+  }
+  if (CLINICAL_QUESTION.test(text)) {
+    console.log(`[VALIDATOR] REJECTED ${context}: patrón de pregunta clínica — "${text.substring(0, 60)}"`);
+    return false;
+  }
+  const wordCount = (text.match(/\w+/g) || []).length;
+  if (wordCount < 4) {
+    console.log(`[VALIDATOR] REJECTED ${context}: menos de 4 palabras significativas — "${text.substring(0, 60)}"`);
+    return false;
+  }
+  const words = text.split(/\s+/);
+  const uniqueWords = new Set(words.map(w => w.toLowerCase()));
+  if (uniqueWords.size / words.length < 0.4) {
+    console.log(`[VALIDATOR] REJECTED ${context}: poca variedad léxica — "${text.substring(0, 60)}"`);
+    return false;
+  }
+  return true;
+}
+
+function isStudyMaterial(text: string): boolean {
+  return validateText(text, 'texto');
+}
+
+function isValidConcept(conceptText: string): boolean {
+  if (!validateText(conceptText, 'concepto')) return false;
+  if (!conceptText.includes(':') || !conceptText.includes(': ')) {
+    console.log(`[VALIDATOR] REJECTED concepto: sin definición (sin ":") — "${conceptText.substring(0, 60)}"`);
+    return false;
+  }
+  const parts = conceptText.split(/:\s*/);
+  const conceptPart = parts[0].trim();
+  const definitionPart = parts.slice(1).join(': ').trim();
+  if (conceptPart.length < 5) {
+    console.log(`[VALIDATOR] REJECTED concepto: parte del concepto muy corta — "${conceptText.substring(0, 60)}"`);
+    return false;
+  }
+  if (!definitionPart || definitionPart.length < 10) {
+    console.log(`[VALIDATOR] REJECTED concepto: definición vacía o muy corta — "${conceptText.substring(0, 60)}"`);
+    return false;
+  }
+  return true;
+}
+
+function isValidFlashcard(front: string, back: string): boolean {
+  if (!front || !back) {
+    console.log(`[VALIDATOR] REJECTED flashcard: front o back vacío — front="${(front||'').substring(0,40)}" back="${(back||'').substring(0,40)}"`);
+    return false;
+  }
+  if (front.length < 10 || back.length < 5) {
+    console.log(`[VALIDATOR] REJECTED flashcard: front (${front.length}) o back (${back.length}) demasiado corto — "${front.substring(0,40)}"`);
+    return false;
+  }
+  if (front.length > 200 || back.length > 200) {
+    console.log(`[VALIDATOR] REJECTED flashcard: front (${front.length}) o back (${back.length}) demasiado largo — "${front.substring(0,40)}..."`);
+    return false;
+  }
+  if (HAS_QUESTION_MARK.test(back)) {
+    console.log(`[VALIDATOR] REJECTED flashcard: back contiene signo de interrogación — front="${front.substring(0,40)}" back="${back.substring(0,40)}"`);
+    return false;
+  }
+  if (areSimilar(front, back, 0.25)) {
+    console.log(`[VALIDATOR] REJECTED flashcard: front y back casi iguales — front="${front.substring(0,40)}" back="${back.substring(0,40)}"`);
+    return false;
+  }
   return true;
 }
 
@@ -162,8 +270,7 @@ Responde SOLO JSON: {"front":"pregunta","back":"respuesta"}`;
 
   const front = String(parsed.front).trim();
   const back = String(parsed.back).trim();
-  if (front.length < 5 || back.length < 2) return null;
-  if (front.length > 200 || back.length > 200) return null;
+  if (!isValidFlashcard(front, back)) return null;
 
   return { front, back };
 }
@@ -204,19 +311,27 @@ async function processFragment(
     if ((trimmed.startsWith('- ') || trimmed.startsWith('• ') || trimmed.startsWith('* ')) &&
         trimmed.length > 5 && trimmed.length < 400) {
       const item = trimmed.replace(/^[-•*]\s*/, '');
-      if (isValidConcept(item) && !bulletItems.some(b => areSimilar(b, item, 0.2))) {
-        bulletItems.push(item);
+      if (isValidConcept(item)) {
+        if (!bulletItems.some(b => areSimilar(b, item, 0.2))) {
+          console.log(`[VALIDATOR] ACCEPTED bullet concepto: "${item.substring(0, 80)}"`);
+          bulletItems.push(item);
+        }
       }
     }
 
-    if (FRAGMENT_ENDINGS.test(trimmed)) continue;
+    if (FRAGMENT_ENDINGS.test(trimmed) || QUESTION_FRAGMENTS.test(trimmed) || CLINICAL_QUESTION.test(trimmed)) continue;
     for (const pattern of definitionPatterns) {
       const m = trimmed.match(pattern);
       if (m) {
         const term = m[1].trim();
         const def = m[2].trim();
-        if (term.length > 3 && term.length < 100 && def.length > 10 && def.length < 300) {
-          if (!FRAGMENT_ENDINGS.test(term) && !definitionPairs.some(d => areSimilar(d.term, term, 0.2))) {
+        if (term.length > 5 && term.length < 100 && def.length > 15 && def.length < 300) {
+          if (FRAGMENT_ENDINGS.test(term)) continue;
+          if (/^[a-z]/.test(term)) continue;
+          if (HAS_QUESTION_MARK.test(term + def)) continue;
+          if ((term.match(/\w+/g) || []).length < 2) continue;
+          if (!definitionPairs.some(d => areSimilar(d.term, term, 0.2))) {
+            console.log(`[VALIDATOR] ACCEPTED definición: term="${term}" def="${def.substring(0, 60)}..."`);
             definitionPairs.push({ term, def });
           }
         }
@@ -226,12 +341,20 @@ async function processFragment(
 
   let aiAttempts = 0;
   for (const item of bulletItems) {
-    const parts = item.split(/[:.:]/);
+    const parts = item.split(/:\s*/);
     const concept = parts[0].trim();
-    const definition = parts.slice(1).join(':').trim() || '';
-    if (concept.length < 2) continue;
+    const definition = parts.slice(1).join(': ').trim() || '';
+    if (concept.length < 5) {
+      console.log(`[VALIDATOR] REJECTED bullet concepto: concepto muy corto — "${item.substring(0, 60)}"`);
+      continue;
+    }
+    if (!definition || definition.length < 10) {
+      console.log(`[VALIDATOR] REJECTED bullet concepto: definición vacía/insuficiente — "${item.substring(0, 60)}"`);
+      continue;
+    }
 
     const clsItem = classifyContent(item);
+    console.log(`[VALIDATOR] ACCEPTED concept INSERT: "${concept}" → "${definition.substring(0, 60)}..."`);
     await db.prepare(
       'INSERT INTO key_concepts (user_id, concept, definition, topic) VALUES ($1, $2, $3, $4)'
     ).run(userId, concept.substring(0, 200), definition.substring(0, 500), clsItem.topic || cls.topic || 'Material de Estudio');
@@ -257,6 +380,9 @@ async function processFragment(
       }
     }
 
+    if (!isValidFlashcard(flashcardFront, flashcardBack)) continue;
+
+    console.log(`[VALIDATOR] ACCEPTED flashcard INSERT: front="${flashcardFront.substring(0, 60)}" back="${flashcardBack.substring(0, 60)}"`);
     await db.prepare(`
       INSERT INTO flashcards (user_id, document_id, front, back, topic, subtopic, specialty, difficulty, tags)
       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
@@ -277,12 +403,16 @@ async function processFragment(
     if (bulletItems.some(b => areSimilar(b, dp.term, 0.3))) continue;
 
     const clsItem = classifyContent(dp.term + ' ' + dp.def);
+    console.log(`[VALIDATOR] ACCEPTED definitionPair concept INSERT: "${dp.term}" → "${dp.def.substring(0, 60)}..."`);
     await db.prepare(
       'INSERT INTO key_concepts (user_id, concept, definition, topic) VALUES ($1, $2, $3, $4)'
     ).run(userId, dp.term.substring(0, 200), dp.def.substring(0, 500), clsItem.topic || cls.topic || 'Material de Estudio');
     conceptCount++;
 
     const simpleFront = `¿Qué es ${dp.term}?`;
+    if (!isValidFlashcard(simpleFront, dp.def.substring(0, 200))) continue;
+
+    console.log(`[VALIDATOR] ACCEPTED definitionPair flashcard INSERT: front="${simpleFront}" back="${dp.def.substring(0, 60)}..."`);
     await db.prepare(`
       INSERT INTO flashcards (user_id, document_id, front, back, topic, subtopic, specialty, difficulty, tags)
       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
@@ -302,11 +432,13 @@ async function processFragment(
   if (conceptCount === 0) {
     const headerMatch = fragment.match(/^((?:Capítulo|Tema|Lección|Unidad|Chapter|Unit|Lesson|Tópico)\s+\d+[.:]\s*.+)$/im);
     if (headerMatch) {
-      const header = headerMatch[1].trim().substring(0, 200);
-      await db.prepare(
-        'INSERT INTO key_concepts (user_id, concept, definition, topic) VALUES ($1, $2, $3, $4)'
-      ).run(userId, header, `Sección del documento: ${filename}`, cls.topic || 'Material de Estudio');
-      conceptCount++;
+      const header = headerMatch[1].trim().substring(0, 100);
+      if (header.length > 10 && !QUESTION_FRAGMENTS.test(header) && !CLINICAL_QUESTION.test(header)) {
+        await db.prepare(
+          'INSERT INTO key_concepts (user_id, concept, definition, topic) VALUES ($1, $2, $3, $4)'
+        ).run(userId, header, `Sección del documento: ${filename}`, cls.topic || 'Material de Estudio');
+        conceptCount++;
+      }
     }
   }
 
@@ -357,30 +489,41 @@ Responde SOLO JSON: [{"concept":"nombre","definition":"definición"}] (máximo 5
         for (const item of parsed) {
           const concept = String(item.concept || '').trim();
           const definition = String(item.definition || '').trim();
-          if (concept.length > 3 && definition.length > 10) {
-            const clsItem = classifyContent(concept + ' ' + definition);
-            await db.prepare(
-              'INSERT INTO key_concepts (user_id, concept, definition, topic) VALUES ($1, $2, $3, $4)'
-            ).run(userId, concept.substring(0, 200), definition.substring(0, 500), clsItem.topic || cls.topic || 'Material de Estudio');
-            totalConcepts++;
-
-            const qVariations = ['¿Qué es', 'Define:', 'Explica brevemente', '¿En qué consiste'];
-            const front = `${qVariations[Math.floor(Math.random() * qVariations.length)]} ${concept}?`;
-            await db.prepare(`
-              INSERT INTO flashcards (user_id, document_id, front, back, topic, subtopic, specialty, difficulty, tags)
-              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-            `).run(
-              userId, documentId,
-              front.substring(0, 200),
-              definition.substring(0, 200),
-              clsItem.topic || cls.topic || 'Material de Estudio',
-              clsItem.subtopic || 'General',
-              clsItem.specialty || cls.specialty || 'General',
-              definition.length > 50 ? 'medio' : 'fácil',
-              ''
-            );
-            totalFlashcards++;
+          const combined = concept + ': ' + definition;
+          if (concept.length < 5) {
+            console.log(`[VALIDATOR] REJECTED AI concepto: concepto muy corto — "${concept}"`);
+            continue;
           }
+          if (!definition || definition.length < 15) {
+            console.log(`[VALIDATOR] REJECTED AI concepto: definición vacía o corta para "${concept}"`);
+            continue;
+          }
+          if (!isStudyMaterial(combined)) continue;
+          const clsItem = classifyContent(combined);
+          console.log(`[VALIDATOR] ACCEPTED AI concept INSERT: "${concept}" → "${definition.substring(0, 60)}..."`);
+          await db.prepare(
+            'INSERT INTO key_concepts (user_id, concept, definition, topic) VALUES ($1, $2, $3, $4)'
+          ).run(userId, concept.substring(0, 200), definition.substring(0, 500), clsItem.topic || cls.topic || 'Material de Estudio');
+          totalConcepts++;
+
+          const qVariations = ['Define:', 'Explica brevemente', '¿En qué consiste'];
+          const front = `${qVariations[Math.floor(Math.random() * qVariations.length)]} ${concept}?`;
+          if (!isValidFlashcard(front, definition.substring(0, 200))) continue;
+          console.log(`[VALIDATOR] ACCEPTED AI flashcard INSERT: front="${front.substring(0, 60)}" back="${definition.substring(0, 60)}..."`);
+          await db.prepare(`
+            INSERT INTO flashcards (user_id, document_id, front, back, topic, subtopic, specialty, difficulty, tags)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+          `).run(
+            userId, documentId,
+            front.substring(0, 200),
+            definition.substring(0, 200),
+            clsItem.topic || cls.topic || 'Material de Estudio',
+            clsItem.subtopic || 'General',
+            clsItem.specialty || cls.specialty || 'General',
+            definition.length > 50 ? 'medio' : 'fácil',
+            ''
+          );
+          totalFlashcards++;
         }
       }
     } catch (e) {
@@ -464,7 +607,7 @@ Responde SOLO JSON: [{"concept":"nombre","definition":"definición"}] (máximo 5
         questionVariations[qIdx],
         JSON.stringify(options),
         correctDef,
-        c.definition + (fragments.length > 0 ? ' (Fuente: documento procesado)' : ''),
+        `Definición: ${c.definition} (Fuente: documento procesado)`,
         c.topic || cls.topic || 'Material de Estudio',
         'General',
         cls.specialty || 'General',
